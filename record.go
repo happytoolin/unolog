@@ -226,16 +226,17 @@ func appendDedupedFields(dst []byte, fields []Field) []byte {
 		if dup {
 			continue
 		}
-		if n < len(seenArr) {
+		switch {
+		case n < len(seenArr):
 			seenArr[n] = key
 			n++
-		} else if seen == nil {
+		case seen == nil:
 			seen = make(map[string]struct{}, len(fields))
 			for j := range n {
 				seen[seenArr[j]] = struct{}{}
 			}
 			seen[key] = struct{}{}
-		} else {
+		default:
 			seen[key] = struct{}{}
 		}
 		kept = append(kept, i)
@@ -271,7 +272,8 @@ func appendFieldJSON(dst []byte, f Field) []byte {
 	case KindErr:
 		// safeErrorMessage fences typed-nils (direct or %w-wrapped)
 		// and panicking Error() implementations.
-		return jsonEnc.AppendString(dst, safeErrorMessage(f.val.(error)))
+		err, _ := f.val.(error)
+		return jsonEnc.AppendString(dst, safeErrorMessage(err))
 	default:
 		return jsonEnc.AppendInterface(dst, f.val)
 	}

@@ -41,7 +41,7 @@ func TestSamplingInbuiltMiddleware(t *testing.T) {
 
 	t.Run("standard user request", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/123", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -52,7 +52,7 @@ func TestSamplingInbuiltMiddleware(t *testing.T) {
 
 	t.Run("vip user request with path prefix match", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/vip/456", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/vip/456", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -68,7 +68,7 @@ func TestSamplingInbuiltMiddleware(t *testing.T) {
 
 	t.Run("slow request triggers sampling", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/789?slow=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/789?slow=1", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -85,7 +85,7 @@ func TestSamplingInbuiltMiddleware(t *testing.T) {
 
 	t.Run("error request is always sampled", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/999?fail=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/999?fail=1", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 

@@ -73,6 +73,9 @@ func TestCompileRuntimeImmutable(t *testing.T) {
 	}
 	mutated := cfg.OperationPolicies[DomainJob]
 	mutated.SuccessLevel = LevelError
+	if mutated.SuccessLevel != LevelError {
+		t.Fatal("test setup: mutation did not apply")
+	}
 	mutated.OutcomeLevels[OutcomeRetry] = LevelDebug
 	*mutated.SamplingRate = 0
 	cfg.LevelSamplingRates[LevelWarn] = 0

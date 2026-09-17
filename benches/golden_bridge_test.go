@@ -41,7 +41,7 @@ func TestGoldenZerologBridgeParity(t *testing.T) {
 			unolog.Add(ctx, "t", time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC), "d", 1500*time.Millisecond)
 		}, nil},
 		{"escapes", func(ctx context.Context) {
-			unolog.Add(ctx, "q", `she said "hi"`, "bs", `C:\path`, "ctl", "tab\ttab")
+			unolog.Add(ctx, "q", `she said "hi"`, "bs", `C:\path`, "ctl", "tab\ttab") //nolint:dupword // deliberate repeated token
 			unolog.Add(ctx, "uni", "héllo ☃ 🍜", "nul", "x\x00y", "del", "d\x7f")
 		}, nil},
 		{"raw_json", func(ctx context.Context) {
@@ -132,7 +132,7 @@ func assertGoldenParity(t *testing.T, zerologLine, hcLine []byte) {
 		}
 		zj, _ := json.Marshal(zv)
 		hj, _ := json.Marshal(hv)
-		if string(zj) != string(hj) {
+		if !bytes.Equal(zj, hj) {
 			t.Fatalf("field %q differs: zerolog %s vs unolog %s", k, zj, hj)
 		}
 	}

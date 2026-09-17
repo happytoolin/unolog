@@ -51,7 +51,7 @@ func TestRouterEchoMiddleware(t *testing.T) {
 	})
 
 	t.Run("successful request", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/users/123", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123", nil)
 		rec := httptest.NewRecorder()
 		e.ServeHTTP(rec, req)
 
@@ -61,7 +61,7 @@ func TestRouterEchoMiddleware(t *testing.T) {
 	})
 
 	t.Run("request with debug", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/users/123?debug=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123?debug=1", nil)
 		rec := httptest.NewRecorder()
 		e.ServeHTTP(rec, req)
 
@@ -71,7 +71,7 @@ func TestRouterEchoMiddleware(t *testing.T) {
 	})
 
 	t.Run("request with failure", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/users/123?fail=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123?fail=1", nil)
 		rec := httptest.NewRecorder()
 		e.ServeHTTP(rec, req)
 

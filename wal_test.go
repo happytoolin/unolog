@@ -139,7 +139,7 @@ func TestWALLookupLastWriteWins(t *testing.T) {
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	ev.addKV(ref, "k", 1)
 	ev.addKV(ref, "k", 2)
-	if v, ok := ev.lookup("k"); !ok || v.(int64) != 2 {
+	if v, ok := ev.lookup("k"); !ok || v != int64(2) {
 		t.Fatalf("lookup = %v %v, want 2", v, ok)
 	}
 	if _, ok := ev.lookup("missing"); ok {
@@ -170,11 +170,11 @@ func TestWALSetters(t *testing.T) {
 	}
 
 	ev.setRoute(ref, "/x/:id")
-	if v, ok := ev.lookup("http.route"); !ok || v.(string) != "/x/:id" {
+	if v, ok := ev.lookup("http.route"); !ok || v != "/x/:id" {
 		t.Fatalf("route = %v", v)
 	}
 	ev.setRoute(ref, "")
-	if v, ok := ev.lookup("http.route"); ok && v.(string) == "" {
+	if v, ok := ev.lookup("http.route"); ok && v == "" {
 		t.Error("empty route written")
 	}
 
@@ -369,7 +369,7 @@ func TestSealDuringAppend(t *testing.T) {
 // and future generations are rejected.
 func TestAppendStaleGeneration(t *testing.T) {
 	ev := newEvent()
-	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
+	ref := &walRef{gen: ev.state.Load() >> walStateBits}
 	ev.append(ref.gen-1, fieldStr("past", "x"))   // stale past
 	ev.append(ref.gen+1, fieldStr("future", "x")) // future
 	for _, f := range ev.fields {
@@ -545,7 +545,7 @@ func TestStragglerStartLine(t *testing.T) {
 			continue // op0 predates the race; checked by the scan below
 		}
 		want := i - 1
-		if v, ok := ev.Lookup("owner"); !ok || v.(int64) != int64(want) {
+		if v, ok := ev.Lookup("owner"); !ok || v != int64(want) {
 			t.Fatalf("event %d: owner marker = %v (ok=%v), want %d — a stale "+
 				"write corrupted a live event", i, v, ok, want)
 		}
@@ -611,7 +611,7 @@ func TestPoolReuseCanary(t *testing.T) {
 	for rounds < 16 && !recycled {
 		op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "churn"})
 		ctx := op.Context()
-		ctx2 = ctx
+		ctx2 = ctx //nolint:fatcontext // the last request's ctx is the stale-handle probe
 		rounds++
 		Add(ctx, "payload", "churn")
 		canaryWrite(ctx1) // live window: stale gen must fail every entry point
@@ -761,9 +761,9 @@ type sim struct {
 	realSnapshots [][]string
 }
 
-func newSim(gen uint64, nStragglers int) *sim {
+func newSim(nStragglers int) *sim {
 	return &sim{
-		ev:    simEvent{gen: gen, state: walActive},
+		ev:    simEvent{gen: 1, state: walActive}, // shadows always start at generation 1
 		plans: make([]stragglerPlan, nStragglers),
 		flags: map[string]bool{},
 	}
@@ -862,7 +862,7 @@ func (s *sim) stragglerAct(plan int) {
 	p := &s.plans[plan]
 	p.actGen = s.ev.gen
 	p.actState = s.ev.state
-	switch p.mode {
+	switch p.mode { //nolint:exhaustive // an unlisted mode is a no-op
 	case modeDrop:
 	case modeGuarded:
 		s.acquireMu()
@@ -898,8 +898,7 @@ func (s *sim) setterAct(plan int) {
 	p := &s.plans[plan]
 	p.actGen = s.ev.gen
 	p.actState = s.ev.state
-	switch p.mode {
-	case modeSetGuarded:
+	if p.mode == modeSetGuarded {
 		s.acquireMu()
 		if s.ev.gen == p.refGen && s.ev.state == walActive {
 			s.ev.msg = p.msg
@@ -1076,13 +1075,10 @@ func scheduleLog(s *sim) string { return strings.Join(s.log, " | ") }
 // verifySchedule runs the invariant checks for one completed schedule:
 // landing legality re-derived from the recorded state history, owner
 // post-seal writes present, snapshot prefix consistency, and the
-// reference-map linearizability check. replay selects whether the
-// schedule is also replayed against the real event.
-func verifySchedule(t *testing.T, s *sim, replay bool) {
+// reference-map linearizability check.
+func verifySchedule(t *testing.T, s *sim) {
 	t.Helper()
-	if replay {
-		replayAndCompare(t, s)
-	}
+	replayAndCompare(t, s)
 
 	// Invariant 1 + the reference re-derivation: every straggler
 	// attempt's outcome is recomputed from the recorded load/act state
@@ -1090,7 +1086,7 @@ func verifySchedule(t *testing.T, s *sim, replay bool) {
 	for i := range s.plans {
 		p := &s.plans[i]
 		want := false
-		switch p.mode {
+		switch p.mode { //nolint:exhaustive // an unlisted mode never lands
 		case modeGuarded, modeSetGuarded:
 			// A guarded load lands iff the act-time recheck still sees
 			// the same generation in the active state.
@@ -1236,7 +1232,7 @@ func resetOp(flag string) simStep {
 // stragglerSteps returns the load/act step pair for one append
 // straggler. The load mirrors the real append's single state load; the
 // act mirrors the post-load fragment (lock + recheck + append).
-func stragglerSteps(name string, plan int, refGen uint64, key string) []simStep {
+func stragglerSteps(name string, plan int, key string) []simStep {
 	return []simStep{
 		{name: name + "-load", run: func(s *sim) { s.stragglerLoad(plan) }},
 		{
@@ -1245,8 +1241,7 @@ func stragglerSteps(name string, plan int, refGen uint64, key string) []simStep 
 			run:      func(s *sim) { s.stragglerAct(plan) },
 			real: func(ev *event, s *sim) {
 				p := &s.plans[plan]
-				switch p.mode {
-				case modeGuarded:
+				if p.mode == modeGuarded {
 					ev.mu.Lock()
 					if cur := ev.state.Load(); cur>>walStateBits == p.refGen &&
 						walState(cur&walStateMask) == walActive {
@@ -1261,7 +1256,7 @@ func stragglerSteps(name string, plan int, refGen uint64, key string) []simStep 
 
 // setterSteps returns the load/act pair for one SetMessage straggler
 // (the guarded-mu discipline pinned in T3).
-func setterSteps(name string, plan int, refGen uint64, msg string) []simStep {
+func setterSteps(name string, plan int, msg string) []simStep {
 	return []simStep{
 		{name: name + "-load", run: func(s *sim) { s.setterLoad(plan) }},
 		{
@@ -1270,8 +1265,7 @@ func setterSteps(name string, plan int, refGen uint64, msg string) []simStep {
 			run:      func(s *sim) { s.setterAct(plan) },
 			real: func(ev *event, s *sim) {
 				p := &s.plans[plan]
-				switch p.mode {
-				case modeSetGuarded:
+				if p.mode == modeSetGuarded {
 					ev.mu.Lock()
 					if cur := ev.state.Load(); cur>>walStateBits == p.refGen &&
 						walState(cur&walStateMask) == walActive {
@@ -1317,10 +1311,11 @@ func snapshotSteps() []simStep {
 // want pins the completed-schedule count: the enumeration is fully
 // deterministic, so a count drift means the scenario, the shadow, or
 // the runnable gates changed.
-func runScenario(t *testing.T, label string, actors []simActor, base *sim, replay bool, want int) {
+func runScenario(t *testing.T, label string, actors []simActor, base *sim, want int) {
 	t.Helper()
 	res := enumerateSchedules(t, actors, base, func(t *testing.T, s *sim) {
-		verifySchedule(t, s, replay)
+		t.Helper()
+		verifySchedule(t, s)
 	})
 	reportScheduleResults(t, res, want)
 	if res.completed == 0 {
@@ -1335,7 +1330,7 @@ func runScenario(t *testing.T, label string, actors []simActor, base *sim, repla
 // legal field history; the real event must match the shadow. Raw
 // multinomial: 9!/(5!·2!·2!) = 756 schedules.
 func TestLoomLiteSealRace(t *testing.T) {
-	base := newSim(1, 2)
+	base := newSim(2)
 	base.plans[0] = stragglerPlan{refGen: 1, key: "s1"}
 	base.plans[1] = stragglerPlan{refGen: 1, key: "s2"}
 	base.postKeys = []string{"o.outcome", "o.code"}
@@ -1344,25 +1339,25 @@ func TestLoomLiteSealRace(t *testing.T) {
 		addOp("o1"), addOp("o2"), sealOp(),
 		postOp("o.outcome"), postOp("o.code"),
 	}}
-	s1 := simActor{name: "s1", steps: stragglerSteps("s1", 0, 1, "s1")}
-	s2 := simActor{name: "s2", steps: stragglerSteps("s2", 1, 1, "s2")}
-	runScenario(t, "seal-race", []simActor{owner, s1, s2}, base, true, 756)
+	s1 := simActor{name: "s1", steps: stragglerSteps("s1", 0, "s1")}
+	s2 := simActor{name: "s2", steps: stragglerSteps("s2", 1, "s2")}
+	runScenario(t, "seal-race", []simActor{owner, s1, s2}, base, 756)
 }
 
 // TestLoomLiteSnapshot: owner sealing under the mutex while a
 // straggler and a snapshotter interleave. Snapshots are guarded like
 // appends, so the snapshotter needs no arm step.
 func TestLoomLiteSnapshot(t *testing.T) {
-	base := newSim(1, 1)
+	base := newSim(1)
 	base.plans[0] = stragglerPlan{refGen: 1, key: "s1"}
 	base.postKeys = []string{"o.outcome"}
 
 	owner := simActor{name: "owner", steps: []simStep{
 		addOp("o1"), addOp("o2"), sealOp(), postOp("o.outcome"),
 	}}
-	s1 := simActor{name: "s1", steps: stragglerSteps("s1", 0, 1, "s1")}
+	s1 := simActor{name: "s1", steps: stragglerSteps("s1", 0, "s1")}
 	snap := simActor{name: "snap", steps: snapshotSteps()}
-	runScenario(t, "snapshot", []simActor{owner, s1, snap}, base, true, 147)
+	runScenario(t, "snapshot", []simActor{owner, s1, snap}, base, 147)
 }
 
 // TestLoomLiteRecycleStale: request 1 seals and releases; request 2
@@ -1373,23 +1368,23 @@ func TestLoomLiteSnapshot(t *testing.T) {
 // The release-before-reset pool rule trims the raw multinomial
 // 9!/(4!·3!·2!) = 1260.
 func TestLoomLiteRecycleStale(t *testing.T) {
-	base := newSim(1, 1)
+	base := newSim(1)
 	base.plans[0] = stragglerPlan{refGen: 1, key: "s1"}
 
 	owner1 := simActor{name: "req1", steps: []simStep{
 		addOp("o1"), sealOp(), postOp("o1.outcome"), releaseOp("released"),
 	}}
-	stale := simActor{name: "stale", steps: stragglerSteps("stale", 0, 1, "s1")}
+	stale := simActor{name: "stale", steps: stragglerSteps("stale", 0, "s1")}
 	owner2 := simActor{name: "req2", steps: []simStep{
 		resetOp("released"), addOp("o2"), sealOp(),
 	}}
-	runScenario(t, "recycle-stale", []simActor{owner1, stale, owner2}, base, true, 36)
+	runScenario(t, "recycle-stale", []simActor{owner1, stale, owner2}, base, 36)
 }
 
 // TestLoomLiteTwoStragglers: two stragglers and a snapshotter around a
 // seal. Raw multinomial: 11!/(4!·2!·2!·3!) = 69,300 schedules.
 func TestLoomLiteTwoStragglers(t *testing.T) {
-	base := newSim(1, 2)
+	base := newSim(2)
 	base.plans[0] = stragglerPlan{refGen: 1, key: "s1"}
 	base.plans[1] = stragglerPlan{refGen: 1, key: "s2"}
 	base.postKeys = []string{"o.outcome"}
@@ -1397,21 +1392,21 @@ func TestLoomLiteTwoStragglers(t *testing.T) {
 	owner := simActor{name: "owner", steps: []simStep{
 		addOp("o1"), sealOp(), postOp("o.outcome"),
 	}}
-	s1 := simActor{name: "s1", steps: stragglerSteps("s1", 0, 1, "s1")}
-	s2 := simActor{name: "s2", steps: stragglerSteps("s2", 1, 1, "s2")}
+	s1 := simActor{name: "s1", steps: stragglerSteps("s1", 0, "s1")}
+	s2 := simActor{name: "s2", steps: stragglerSteps("s2", 1, "s2")}
 	snap := simActor{name: "snap", steps: snapshotSteps()}
-	runScenario(t, "two-stragglers", []simActor{owner, s1, s2, snap}, base, true, 3492)
+	runScenario(t, "two-stragglers", []simActor{owner, s1, s2, snap}, base, 3492)
 }
 
 // TestLoomLiteSetterRaces: a SetMessage straggler interleaved with the
 // owner. The message may change only when the setter's in-lock recheck
 // still sees the old generation active; a post-seal load never writes.
 func TestLoomLiteSetterRaces(t *testing.T) {
-	base := newSim(1, 1)
+	base := newSim(1)
 	base.plans[0] = stragglerPlan{refGen: 1, msg: "stale-msg"}
 	owner := simActor{name: "owner", steps: []simStep{addOp("o1"), sealOp()}}
-	set := simActor{name: "set", steps: setterSteps("set", 0, 1, "stale-msg")}
-	runScenario(t, "setter", []simActor{owner, set}, base, true, 6)
+	set := simActor{name: "set", steps: setterSteps("set", 0, "stale-msg")}
+	runScenario(t, "setter", []simActor{owner, set}, base, 6)
 }
 
 //
@@ -1500,7 +1495,7 @@ func (s *matrixSink) Write(_ context.Context, rec *Record) {
 // op.commit (which reaches the sink). fireAt == -1 disables the
 // boundary fire (used when the sink fires instead). The caller
 // releases the event when it wants the pool phases.
-func stagedEnd(op *Operation, fireAt matrixPhase, fire func(ctx context.Context)) bool {
+func stagedEnd(op *Operation, fireAt matrixPhase, fire func(ctx context.Context)) {
 	now := time.Now()
 	duration := now.Sub(op.ev.startedAt)
 
@@ -1531,7 +1526,7 @@ func stagedEnd(op *Operation, fireAt matrixPhase, fire func(ctx context.Context)
 	if fireAt == phasePreCommit {
 		fire(op.Context())
 	}
-	return op.commit(&commitInput{
+	op.commit(&commitInput{
 		outcome:  outcome,
 		code:     code,
 		duration: duration,

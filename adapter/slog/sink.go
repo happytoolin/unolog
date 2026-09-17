@@ -51,7 +51,7 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 		return
 	}
 
-	slogLevel := stdslog.LevelInfo
+	var slogLevel stdslog.Level
 	switch rec.Level() {
 	case unolog.LevelDebug:
 		slogLevel = stdslog.LevelDebug
@@ -59,6 +59,8 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 		slogLevel = stdslog.LevelWarn
 	case unolog.LevelError:
 		slogLevel = stdslog.LevelError
+	default:
+		slogLevel = stdslog.LevelInfo
 	}
 	if !s.logger.Enabled(ctx, slogLevel) {
 		return
@@ -70,7 +72,7 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 		return
 	}
 
-	bufPtr := slogAttrPool.Get().(*[]stdslog.Attr)
+	bufPtr := slogAttrPool.Get().(*[]stdslog.Attr) //nolint:forcetypeassert // the pool's New stores exactly *[]stdslog.Attr
 	attrs := (*bufPtr)[:0]
 	defer func() { recycleAttrs(bufPtr, attrs) }()
 	for _, i := range wire.LastIndices(fields, unolog.Field.Key) {

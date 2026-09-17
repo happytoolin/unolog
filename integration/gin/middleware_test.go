@@ -24,7 +24,7 @@ func TestMiddlewareCapturesRouteAndFields(t *testing.T) {
 		c.Status(http.StatusCreated)
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/123", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -32,8 +32,8 @@ func TestMiddlewareCapturesRouteAndFields(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusCreated {
-		t.Fatalf("expected status %d, got %v", http.StatusCreated, statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusCreated {
+		t.Fatalf("expected status %d, got %v", http.StatusCreated, statusField(events[0]))
 	}
 	if fieldValue(events[0], "http.route") != "/orders/:id" {
 		t.Fatalf("expected route template, got %v", fieldValue(events[0], "http.route"))
@@ -52,7 +52,7 @@ func TestMiddlewareSinkNilStillRunsHandler(t *testing.T) {
 	})
 
 	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/ok", nil))
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ok", nil))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
 	}
@@ -74,12 +74,12 @@ func TestMiddlewareErrorAndSamplingBehavior(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/drop", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/drop", nil))
 	if got := len(sink.Events()); got != 0 {
 		t.Fatalf("expected sampled request to drop, got %d events", got)
 	}
 
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/err", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/err", nil))
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -87,8 +87,8 @@ func TestMiddlewareErrorAndSamplingBehavior(t *testing.T) {
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("level = %s, want ERROR", events[0].Level())
 	}
-	if statusField(events[0], "http.status") != http.StatusInternalServerError {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusInternalServerError)
+	if statusField(events[0]) != http.StatusInternalServerError {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusInternalServerError)
 	}
 	if _, ok := fieldValue(events[0], "error").(map[string]any); !ok {
 		t.Fatalf("expected structured error field")
@@ -114,7 +114,7 @@ func TestMiddlewarePanicLogsAndPropagates(t *testing.T) {
 				recovered = true
 			}
 		}()
-		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic/1", nil))
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic/1", nil))
 	}()
 	if !recovered {
 		t.Fatal("expected panic propagation")
@@ -126,8 +126,8 @@ func TestMiddlewarePanicLogsAndPropagates(t *testing.T) {
 	if fieldValue(events[0], "http.route") != "/panic/:id" {
 		t.Fatalf("route = %v", fieldValue(events[0], "http.route"))
 	}
-	if statusField(events[0], "http.status") != http.StatusInternalServerError {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusInternalServerError)
+	if statusField(events[0]) != http.StatusInternalServerError {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusInternalServerError)
 	}
 	if _, ok := fieldValue(events[0], "panic").(map[string]any); !ok {
 		t.Fatalf("expected panic metadata")
@@ -146,7 +146,7 @@ func TestMiddlewareLogsNoRouteWithoutTemplate(t *testing.T) {
 		c.Status(http.StatusNotFound)
 	})
 
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/missing", nil))
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -154,8 +154,8 @@ func TestMiddlewareLogsNoRouteWithoutTemplate(t *testing.T) {
 	if _, ok := events[0].Lookup("http.route"); ok {
 		t.Fatalf("did not expect route template for unmatched route")
 	}
-	if statusField(events[0], "http.status") != http.StatusNotFound {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusNotFound)
+	if statusField(events[0]) != http.StatusNotFound {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusNotFound)
 	}
 }
 
@@ -172,13 +172,13 @@ func TestMiddlewareGinErrorKeepsCommittedStatus(t *testing.T) {
 		c.AbortWithStatus(http.StatusTooManyRequests)
 	})
 
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/too-many", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/too-many", nil))
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusTooManyRequests {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusTooManyRequests)
+	if statusField(events[0]) != http.StatusTooManyRequests {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusTooManyRequests)
 	}
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("level = %s, want ERROR", events[0].Level())
@@ -198,7 +198,7 @@ func TestMiddlewareGinErrorUsesUnderlyingErrorMetadata(t *testing.T) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 	})
 
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/err", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/err", nil))
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -226,8 +226,8 @@ func fieldValue(ev unolog.CapturedEvent, key string) any {
 	return v
 }
 
-func statusField(ev unolog.CapturedEvent, key string) int64 {
-	v, _ := ev.Lookup(key)
+func statusField(ev unolog.CapturedEvent) int64 {
+	v, _ := ev.Lookup("http.status")
 	n, _ := v.(int64)
 	return n
 }

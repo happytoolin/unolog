@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/happytoolin/unolog"
 	uzap "github.com/happytoolin/unolog/adapter/zap"
@@ -47,5 +48,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	_ = http.ListenAndServe(":8102", mw(mux))
+	srv := &http.Server{
+		Addr:              ":8102",
+		Handler:           mw(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	_ = srv.ListenAndServe()
 }

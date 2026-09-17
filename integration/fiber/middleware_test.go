@@ -23,11 +23,12 @@ func TestMiddlewareCapturesRouteAndFields(t *testing.T) {
 		return c.SendStatus(http.StatusNoContent)
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/123", nil)
 	res, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("fiber test request failed: %v", err)
 	}
+	defer res.Body.Close()
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("expected HTTP status %d, got %d", http.StatusNoContent, res.StatusCode)
 	}
@@ -36,8 +37,8 @@ func TestMiddlewareCapturesRouteAndFields(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusNoContent {
-		t.Fatalf("expected status %d, got %v", http.StatusNoContent, statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %v", http.StatusNoContent, statusField(events[0]))
 	}
 	if fieldValue(events[0], "http.route") != "/orders/:id" {
 		t.Fatalf("expected route template, got %v", fieldValue(events[0], "http.route"))
@@ -54,10 +55,11 @@ func TestMiddlewareSinkNilStillRunsHandler(t *testing.T) {
 		return c.SendStatus(http.StatusAccepted)
 	})
 
-	res, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok", nil))
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ok", nil))
 	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	defer res.Body.Close()
 	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusAccepted)
 	}
@@ -77,14 +79,19 @@ func TestMiddlewareErrorAndSamplingBehavior(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/drop", nil)); err != nil {
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/drop", nil))
+	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	_ = res.Body.Close()
 	if got := len(sink.Events()); got != 0 {
 		t.Fatalf("expected sampled request to drop, got %d events", got)
 	}
 
-	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/err", nil))
+	res, _ = app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/err", nil))
+	if res != nil {
+		_ = res.Body.Close()
+	}
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -92,8 +99,8 @@ func TestMiddlewareErrorAndSamplingBehavior(t *testing.T) {
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("level = %s, want ERROR", events[0].Level())
 	}
-	if statusField(events[0], "http.status") != http.StatusInternalServerError {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusInternalServerError)
+	if statusField(events[0]) != http.StatusInternalServerError {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusInternalServerError)
 	}
 	if _, ok := fieldValue(events[0], "error").(map[string]any); !ok {
 		t.Fatalf("expected structured error field")
@@ -112,9 +119,11 @@ func TestMiddlewarePanicLogsAndPropagates(t *testing.T) {
 		panic("bad")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/panic/1", nil)); err != nil {
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic/1", nil))
+	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	_ = res.Body.Close()
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -122,8 +131,8 @@ func TestMiddlewarePanicLogsAndPropagates(t *testing.T) {
 	if fieldValue(events[0], "http.route") != "/panic/:id" {
 		t.Fatalf("route = %v", fieldValue(events[0], "http.route"))
 	}
-	if statusField(events[0], "http.status") != http.StatusInternalServerError {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusInternalServerError)
+	if statusField(events[0]) != http.StatusInternalServerError {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusInternalServerError)
 	}
 	if _, ok := fieldValue(events[0], "panic").(map[string]any); !ok {
 		t.Fatalf("expected panic metadata")
@@ -141,15 +150,17 @@ func TestMiddlewareFiberErrorKeepsHTTPStatus(t *testing.T) {
 		return gofiber.NewError(http.StatusTooManyRequests, "slow down")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/too-many", nil)); err != nil {
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/too-many", nil))
+	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	_ = res.Body.Close()
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusTooManyRequests {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusTooManyRequests)
+	if statusField(events[0]) != http.StatusTooManyRequests {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusTooManyRequests)
 	}
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("level = %s, want ERROR", events[0].Level())
@@ -168,9 +179,11 @@ func TestMiddlewareCustomMessagePropagates(t *testing.T) {
 		return c.SendStatus(http.StatusOK)
 	})
 
-	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/ok", nil)); err != nil {
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ok", nil))
+	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	_ = res.Body.Close()
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -195,10 +208,11 @@ func TestMiddlewareLogsStatusFromCustomFiberErrorHandler(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	res, err := app.Test(httptest.NewRequest(http.MethodGet, "/custom-err", nil))
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/custom-err", nil))
 	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	defer res.Body.Close()
 	if res.StatusCode != http.StatusTeapot {
 		t.Fatalf("expected HTTP status %d, got %d", http.StatusTeapot, res.StatusCode)
 	}
@@ -207,8 +221,8 @@ func TestMiddlewareLogsStatusFromCustomFiberErrorHandler(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusTeapot {
-		t.Fatalf("status = %v, want %d", statusField(events[0], "http.status"), http.StatusTeapot)
+	if statusField(events[0]) != http.StatusTeapot {
+		t.Fatalf("status = %v, want %d", statusField(events[0]), http.StatusTeapot)
 	}
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("level = %s, want ERROR", events[0].Level())
@@ -236,9 +250,11 @@ func TestMiddlewareReturnsCustomFiberErrorHandlerFailure(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/custom-err-failure", nil)); err != nil {
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/custom-err-failure", nil))
+	if err != nil {
 		t.Fatalf("fiber request failed: %v", err)
 	}
+	_ = res.Body.Close()
 	if !errors.Is(upstreamErr, handlerErr) {
 		t.Fatalf("upstream error = %v, want %v", upstreamErr, handlerErr)
 	}
@@ -267,8 +283,8 @@ func fieldValue(ev unolog.CapturedEvent, key string) any {
 	return v
 }
 
-func statusField(ev unolog.CapturedEvent, key string) int64 {
-	v, _ := ev.Lookup(key)
+func statusField(ev unolog.CapturedEvent) int64 {
+	v, _ := ev.Lookup("http.status")
 	n, _ := v.(int64)
 	return n
 }

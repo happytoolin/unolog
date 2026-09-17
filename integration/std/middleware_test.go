@@ -3,7 +3,6 @@ package std
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +35,7 @@ func TestMiddlewareDelegatesToCoreAndLogs(t *testing.T) {
 	}))
 
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/x", nil))
+	h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil))
 
 	events := sink.Events()
 	if len(events) != 1 {
@@ -45,8 +44,8 @@ func TestMiddlewareDelegatesToCoreAndLogs(t *testing.T) {
 	if events[0].Message() != "done" {
 		t.Fatalf("expected message done, got %q", events[0].Message())
 	}
-	if statusField(events[0], "http.status") != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %v", http.StatusAccepted, statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %v", http.StatusAccepted, statusField(events[0]))
 	}
 	if fieldValue(events[0], "example") != "std-integration" {
 		t.Fatalf("expected example field, got %v", fieldValue(events[0], "example"))
@@ -67,7 +66,7 @@ func TestMiddlewareAppliesCustomMessageFromHandlerContext(t *testing.T) {
 	}))
 
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/orders/123/ship", nil))
+	h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/orders/123/ship", nil))
 
 	events := sink.Events()
 	if len(events) != 1 {
@@ -76,8 +75,8 @@ func TestMiddlewareAppliesCustomMessageFromHandlerContext(t *testing.T) {
 	if events[0].Message() != "order shipped" {
 		t.Fatalf("expected message %q, got %q", "order shipped", events[0].Message())
 	}
-	if statusField(events[0], "http.status") != http.StatusAccepted {
-		t.Fatalf("expected status %d, got %v", http.StatusAccepted, statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %v", http.StatusAccepted, statusField(events[0]))
 	}
 }
 
@@ -100,7 +99,7 @@ func TestMiddlewarePanicPropagatesAndLogsError(t *testing.T) {
 				recovered = true
 			}
 		}()
-		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/panic", nil))
+		h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic", nil))
 	}()
 	if !recovered {
 		t.Fatal("expected panic to propagate")
@@ -113,8 +112,8 @@ func TestMiddlewarePanicPropagatesAndLogsError(t *testing.T) {
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("expected error level, got %s", events[0].Level())
 	}
-	if statusField(events[0], "http.status") != http.StatusInternalServerError {
-		t.Fatalf("expected status 500, got %v", statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusInternalServerError {
+		t.Fatalf("expected status 500, got %v", statusField(events[0]))
 	}
 	if _, ok := fieldValue(events[0], "panic").(map[string]any); !ok {
 		t.Fatalf("expected panic field in event")
@@ -134,7 +133,7 @@ func TestMiddlewareWriteHeaderTwiceLogsFirstCommittedStatus(t *testing.T) {
 	}))
 
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/double-header", nil))
+	h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/double-header", nil))
 
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("expected committed HTTP status %d, got %d", http.StatusCreated, rr.Code)
@@ -144,8 +143,8 @@ func TestMiddlewareWriteHeaderTwiceLogsFirstCommittedStatus(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusCreated {
-		t.Fatalf("expected logged status %d, got %v", http.StatusCreated, statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusCreated {
+		t.Fatalf("expected logged status %d, got %v", http.StatusCreated, statusField(events[0]))
 	}
 }
 
@@ -169,7 +168,7 @@ func TestMiddlewarePanicAfterCommittedStatusKeepsCommittedStatus(t *testing.T) {
 				recovered = true
 			}
 		}()
-		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/panic-after-commit", nil))
+		h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/panic-after-commit", nil))
 	}()
 
 	if !recovered {
@@ -186,8 +185,8 @@ func TestMiddlewarePanicAfterCommittedStatusKeepsCommittedStatus(t *testing.T) {
 	if events[0].Level() != unolog.LevelError {
 		t.Fatalf("expected error level, got %s", events[0].Level())
 	}
-	if statusField(events[0], "http.status") != http.StatusCreated {
-		t.Fatalf("expected logged status %d, got %v", http.StatusCreated, statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusCreated {
+		t.Fatalf("expected logged status %d, got %v", http.StatusCreated, statusField(events[0]))
 	}
 }
 
@@ -209,7 +208,7 @@ func TestMiddlewareSetsRouteFromRequestPattern(t *testing.T) {
 	})
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/123", nil)
 	mw(mux).ServeHTTP(rr, req)
 
 	events := sink.Events()
@@ -266,7 +265,7 @@ func TestMiddlewarePreservesOptionalInterfaces(t *testing.T) {
 	}))
 
 	base := &fullOptionalWriter{testOptionalWriter: testOptionalWriter{header: make(http.Header)}}
-	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)
 	h.ServeHTTP(base, req)
 	if !base.flushed {
 		t.Fatalf("expected flush to be forwarded")
@@ -293,15 +292,15 @@ func TestMiddlewareWriteSetsStatusCode(t *testing.T) {
 	}))
 
 	base := &testOptionalWriter{header: make(http.Header)}
-	req := httptest.NewRequest(http.MethodGet, "/copy", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/copy", nil)
 	h.ServeHTTP(base, req)
 
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusOK {
-		t.Fatalf("expected status 200, got %v", statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusOK {
+		t.Fatalf("expected status 200, got %v", statusField(events[0]))
 	}
 }
 
@@ -323,15 +322,15 @@ func TestMiddlewareReadFromSetsStatusCode(t *testing.T) {
 	}))
 
 	base := &fullOptionalWriter{testOptionalWriter: testOptionalWriter{header: make(http.Header)}}
-	req := httptest.NewRequest(http.MethodGet, "/copy-readfrom", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/copy-readfrom", nil)
 	h.ServeHTTP(base, req)
 
 	events := sink.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if statusField(events[0], "http.status") != http.StatusOK {
-		t.Fatalf("expected status 200, got %v", statusField(events[0], "http.status"))
+	if statusField(events[0]) != http.StatusOK {
+		t.Fatalf("expected status 200, got %v", statusField(events[0]))
 	}
 }
 
@@ -341,7 +340,7 @@ func TestMiddlewareNilSinkStillRunsHandler(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/no-sink", nil))
+	h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/no-sink", nil))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
 	}
@@ -357,7 +356,7 @@ func TestMiddlewareSamplingDropForHealthyRequest(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/drop", nil))
+	h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/drop", nil))
 	if got := len(sink.Events()); got != 0 {
 		t.Fatalf("expected no events, got %d", got)
 	}
@@ -374,8 +373,8 @@ func fieldValue(ev unolog.CapturedEvent, key string) any {
 	return v
 }
 
-func statusField(ev unolog.CapturedEvent, key string) int64 {
-	v, _ := ev.Lookup(key)
+func statusField(ev unolog.CapturedEvent) int64 {
+	v, _ := ev.Lookup("http.status")
 	n, _ := v.(int64)
 	return n
 }
@@ -442,13 +441,17 @@ func TestMiddlewareFlushCommitsStatus(t *testing.T) {
 	t.Run("panic after flush keeps the committed 200", func(t *testing.T) {
 		sink.Reset()
 		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.(http.Flusher).Flush()
+			f, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("response writer is not a Flusher")
+			}
+			f.Flush()
 			panic("mid-stream")
 		}))
 		rec := httptest.NewRecorder()
 		func() {
 			defer func() { _ = recover() }()
-			handler.ServeHTTP(rec, httptest.NewRequest("GET", "/s", nil))
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), "GET", "/s", nil))
 		}()
 		if rec.Code != http.StatusOK {
 			t.Fatalf("client saw %d, want 200", rec.Code)
@@ -463,10 +466,14 @@ func TestMiddlewareFlushCommitsStatus(t *testing.T) {
 	t.Run("error after flush keeps the committed 200", func(t *testing.T) {
 		sink.Reset()
 		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.(http.Flusher).Flush()
+			f, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("response writer is not a Flusher")
+			}
+			f.Flush()
 			unolog.Error(r.Context(), errors.New("post-flush failure"))
 		}))
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/s", nil))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), "GET", "/s", nil))
 		st, _ := sink.Events()[0].Lookup("http.status")
 		if st != int64(http.StatusOK) {
 			t.Fatalf("status = %v, want committed 200", st)
@@ -493,7 +500,7 @@ func TestMiddlewareFlushCommitsStatus(t *testing.T) {
 			}
 			f.Flush()
 		}))
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/s", nil))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), "GET", "/s", nil))
 		if st, _ := sink.Events()[0].Lookup("http.status"); st != int64(http.StatusOK) {
 			t.Fatalf("status = %v, want 200 after plain flush", st)
 		}
@@ -506,7 +513,7 @@ func TestCrashNilRuntimePassthrough(t *testing.T) {
 	mw := Middleware(nil)
 	handler := mw(http.NotFoundHandler())
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/x", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), "GET", "/x", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (passthrough)", rec.Code)
 	}
@@ -546,7 +553,7 @@ func TestMiddlewareConcurrentStatusIntegrity(t *testing.T) {
 		wg.Go(func() {
 			for i := range 100 {
 				code := []string{"201", "404", "500", ""}[(g+i)%4]
-				req := httptest.NewRequest(http.MethodGet, "/x?code="+code, nil).WithContext(context.Background())
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x?code="+code, nil)
 				rr := httptest.NewRecorder()
 				handler.ServeHTTP(rr, req)
 				if got := want[code]; rr.Code != got {
@@ -651,7 +658,7 @@ func TestWireMixedTrafficRealLogger(t *testing.T) {
 	})
 	mux.HandleFunc("GET /stream/{id}", func(w http.ResponseWriter, r *http.Request) {
 		unolog.Add(r.Context(), "id", r.PathValue("id"))
-		f := w.(http.Flusher)
+		f := w.(http.Flusher) //nolint:forcetypeassert // httptest.ResponseRecorder always implements http.Flusher
 		for i := range 3 {
 			fmt.Fprintf(w, "chunk %d\n", i)
 			f.Flush()
@@ -685,9 +692,11 @@ func TestWireMixedTrafficRealLogger(t *testing.T) {
 			for i := range per {
 				id := fmt.Sprintf("w%d-%d", w, i)
 				for _, p := range []string{"/ok/", "/err/", "/panic/", "/stream/", "/kitchen/"} {
-					resp, err := client.Get(srv.URL + p + id)
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+p+id, nil)
 					if err == nil {
-						_ = resp.Body.Close()
+						if resp, doErr := client.Do(req); doErr == nil {
+							_ = resp.Body.Close()
+						}
 					}
 				}
 			}
@@ -705,7 +714,11 @@ func TestWireMixedTrafficRealLogger(t *testing.T) {
 	outcomes := map[string]int{}
 	for _, ln := range lines {
 		m := parseWireLine(t, ln)
-		outcomes[m["op.outcome"].(string)]++
+		outcome, ok := m["op.outcome"].(string)
+		if !ok {
+			t.Fatalf("op.outcome is not a string: %v", m["op.outcome"])
+		}
+		outcomes[outcome]++
 	}
 	// Exact mix: every /err is failure, every /panic is panic, the
 	// rest success (4xx teapot is success-with-status, not failure).
@@ -744,7 +757,11 @@ func TestWireRouteAndOperationShareTheTemplate(t *testing.T) {
 	})
 	srv := httptest.NewServer(Middleware(rt)(mux))
 
-	resp, err := srv.Client().Get(srv.URL + "/orders/o_42")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/orders/o_42", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

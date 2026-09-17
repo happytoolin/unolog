@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -63,7 +62,7 @@ func wireMux() *http.ServeMux {
 	})
 	mux.HandleFunc("GET /fail/{id}", func(w http.ResponseWriter, r *http.Request) {
 		unolog.Add(r.Context(), "wire", "fail-field")
-		unolog.Error(r.Context(), fmt.Errorf("bridge failure"))
+		unolog.Error(r.Context(), errors.New("bridge failure"))
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
 	return mux
@@ -105,7 +104,11 @@ func drivePipeline(t *testing.T, sink unolog.Sink, buf *bytes.Buffer, pipeline s
 	defer srv.Close() // safety net for early fatals; Close is idempotent
 
 	for _, c := range wireCases {
-		resp, err := srv.Client().Get(srv.URL + c.request)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+c.request, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := srv.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +240,7 @@ func assertConsistency(t *testing.T, mode string, out runResult) {
 	if !ok {
 		t.Fatalf("expected http.status field")
 	}
-	route, _ := lookupString(out.event, "http.route")
+	route := lookupString(out.event, "http.route")
 	if route == "" || !strings.Contains(route, "/orders") {
 		t.Fatalf("unexpected route field: %v", route)
 	}
@@ -337,7 +340,7 @@ func runStd(t *testing.T, mode string) runResult {
 				panicObserved = true
 			}
 		}()
-		mw(mux).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+		mw(mux).ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
 	}()
 	return runResult{event: onlyEvent(t, sink), panicObserved: panicObserved}
 }
@@ -365,7 +368,7 @@ func runGin(t *testing.T, mode string) runResult {
 				panicObserved = true
 			}
 		}()
-		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
 	}()
 	return runResult{event: onlyEvent(t, sink), panicObserved: panicObserved}
 }
@@ -391,7 +394,7 @@ func runEcho(t *testing.T, mode string) runResult {
 				panicObserved = true
 			}
 		}()
-		e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+		e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
 	}()
 	return runResult{event: onlyEvent(t, sink), panicObserved: panicObserved}
 }
@@ -411,7 +414,10 @@ func runFiber(t *testing.T, mode string) runResult {
 		}
 		return c.SendStatus(http.StatusOK)
 	})
-	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
+	if res != nil {
+		_ = res.Body.Close()
+	}
 	event := onlyEvent(t, sink)
 	panicField, _ := event.Lookup("panic")
 	_, hasPanic := panicField.(map[string]any)
@@ -433,7 +439,10 @@ func runFiberV3(t *testing.T, mode string) runResult {
 		}
 		return c.SendStatus(http.StatusOK)
 	})
-	_, err := app.Test(httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+	res, err := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
+	if res != nil {
+		_ = res.Body.Close()
+	}
 	event := onlyEvent(t, sink)
 	panicField, _ := event.Lookup("panic")
 	_, hasPanic := panicField.(map[string]any)
@@ -448,7 +457,7 @@ func runGinImplicitError(t *testing.T) runResult {
 	r.GET("/orders/:id", func(c *gin.Context) {
 		_ = c.Error(errors.New("boom"))
 	})
-	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
 	return runResult{event: onlyEvent(t, sink)}
 }
 
@@ -460,7 +469,7 @@ func runEchoImplicitError(t *testing.T) runResult {
 	e.GET("/orders/:id", func(c echo.Context) error {
 		return errors.New("boom")
 	})
-	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
 	return runResult{event: onlyEvent(t, sink)}
 }
 
@@ -472,7 +481,10 @@ func runFiberImplicitError(t *testing.T) runResult {
 	app.Get("/orders/:id", func(c *fiber.Ctx) error {
 		return errors.New("boom")
 	})
-	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+	res, _ := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
+	if res != nil {
+		_ = res.Body.Close()
+	}
 	return runResult{event: onlyEvent(t, sink)}
 }
 
@@ -484,7 +496,10 @@ func runFiberV3ImplicitError(t *testing.T) runResult {
 	app.Get("/orders/:id", func(c fiberv3.Ctx) error {
 		return errors.New("boom")
 	})
-	_, _ = app.Test(httptest.NewRequest(http.MethodGet, "/orders/1", nil))
+	res, _ := app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil))
+	if res != nil {
+		_ = res.Body.Close()
+	}
 	return runResult{event: onlyEvent(t, sink)}
 }
 
@@ -504,8 +519,8 @@ func normalizeResult(t *testing.T, out runResult) comparableResult {
 	panicField, _ := out.event.Lookup("panic")
 	_, hasError := errField.(map[string]any)
 	_, hasPanic := panicField.(map[string]any)
-	method, _ := lookupString(out.event, "http.method")
-	path, _ := lookupString(out.event, "http.path")
+	method := lookupString(out.event, "http.method")
+	path := lookupString(out.event, "http.path")
 	errorMessage, _ := errorDetails(errField)
 	panicType, panicValue := panicDetails(panicField)
 	statusVal, _ := out.event.Lookup("http.status")
@@ -523,13 +538,13 @@ func normalizeResult(t *testing.T, out runResult) comparableResult {
 	}
 }
 
-func lookupString(ev unolog.CapturedEvent, key string) (string, bool) {
+func lookupString(ev unolog.CapturedEvent, key string) string {
 	v, ok := ev.Lookup(key)
 	if !ok {
-		return "", false
+		return ""
 	}
-	s, ok := v.(string)
-	return s, ok
+	s, _ := v.(string)
+	return s
 }
 
 func statusFromField(t *testing.T, value any) int {

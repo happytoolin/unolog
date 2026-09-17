@@ -57,7 +57,11 @@ func TestSinkWriteMapsLevelAndFields(t *testing.T) {
 	if payload["http.status"] != float64(500) {
 		t.Fatalf("http.status = %v", payload["http.status"])
 	}
-	if _, err := time.Parse(time.RFC3339, payload["time"].(string)); err != nil {
+	tm, ok := payload["time"].(string)
+	if !ok {
+		t.Fatalf("time is not a string: %v", payload["time"])
+	}
+	if _, err := time.Parse(time.RFC3339, tm); err != nil {
 		t.Fatalf("time not RFC3339: %v", payload["time"])
 	}
 }

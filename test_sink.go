@@ -127,6 +127,8 @@ func deepCopyValue(v any, seen *visitSet) any {
 				deepCopyReflect(rv, cp, local)
 				return cp.Interface()
 			}
+		default:
+			// Immutable scalars pass through unchanged.
 		}
 		return v
 	}
@@ -212,7 +214,7 @@ func newVisitSet() *visitSet { return &visitSet{seen: map[visitKey]any{}} }
 func deepCopyMap(m map[string]any, seen *visitSet) map[string]any {
 	key := visitKey{typ: reflect.TypeOf(m), ptr: reflect.ValueOf(m).Pointer()}
 	if prior, ok := seen.seen[key]; ok {
-		return prior.(map[string]any)
+		return prior.(map[string]any) //nolint:forcetypeassert // the visit set stores exactly this type
 	}
 	out := make(map[string]any, len(m))
 	seen.seen[key] = out
@@ -225,7 +227,7 @@ func deepCopyMap(m map[string]any, seen *visitSet) map[string]any {
 func deepCopySlice(s []any, seen *visitSet) []any {
 	key := visitKey{typ: reflect.TypeOf(s), ptr: reflect.ValueOf(s).Pointer()}
 	if prior, ok := seen.seen[key]; ok {
-		return prior.([]any)
+		return prior.([]any) //nolint:forcetypeassert // the visit set stores exactly this type
 	}
 	out := make([]any, len(s))
 	seen.seen[key] = out

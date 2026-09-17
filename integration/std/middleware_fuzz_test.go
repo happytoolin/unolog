@@ -376,8 +376,7 @@ func FuzzMiddlewareRequest(f *testing.F) {
 						ki = i
 					}
 				}
-				b = append(b, byte(ki), 0)
-				b = append(b, byte(len(fmt.Sprint(a.value))))
+				b = append(b, byte(ki), 0, byte(len(fmt.Sprint(a.value))))
 			case mwWriteHeader:
 				si := 0
 				for i, s := range mwStatuses {
@@ -480,7 +479,7 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		var escaped any
 		func() {
 			defer func() { escaped = recover() }()
-			handler.ServeHTTP(base, httptest.NewRequest(http.MethodGet, "/x", nil))
+			handler.ServeHTTP(base, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil))
 		}()
 
 		// The middleware re-raises panics with the original value.
@@ -495,7 +494,11 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		// Interface delegation: flushes and hijacks reached the writer
 		// exactly when the mask promoted them (unwrap the middleware's
 		// responseWriter to read the base's flags).
-		fb := base.(interface{ fuzzBase() *fuzzBaseWriter }).fuzzBase()
+		baseFuzzer, ok := base.(interface{ fuzzBase() *fuzzBaseWriter })
+		if !ok {
+			t.Fatalf("base writer does not expose fuzzBase: %T", base)
+		}
+		fb := baseFuzzer.fuzzBase()
 		if m.flushExecuted != fb.flushed {
 			t.Fatalf("flush executed=%v, writer saw %v (mask %x)", m.flushExecuted, fb.flushed, mask)
 		}
@@ -526,13 +529,13 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		if m.hasPanic {
 			if p, ok := ev.Lookup("panic"); !ok {
 				t.Fatal("missing panic field")
-			} else if pm := p.(map[string]any); pm["value"] != fmt.Sprint(m.panicValue) {
-				t.Fatalf("panic.value = %v", pm["value"])
+			} else if pm, ok := p.(map[string]any); !ok || pm["value"] != fmt.Sprint(m.panicValue) {
+				t.Fatalf("panic.value = %v", p)
 			}
 			if e, ok := ev.Lookup("error"); !ok {
 				t.Fatal("missing error field")
-			} else if em := e.(map[string]any); em["message"] != "panic: "+fmt.Sprint(m.panicValue) {
-				t.Fatalf("error.message = %v", em["message"])
+			} else if em, ok := e.(map[string]any); !ok || em["message"] != "panic: "+fmt.Sprint(m.panicValue) {
+				t.Fatalf("error.message = %v", e)
 			}
 		}
 		// user fields, last write wins

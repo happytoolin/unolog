@@ -128,7 +128,7 @@ func FuzzAppendFloat64(f *testing.F) {
 		}
 		if expected, err := stdjson.Marshal(val); err != nil {
 			t.Error(err)
-		} else if string(actual) != string(expected) {
+		} else if !bytes.Equal(actual, expected) {
 			t.Errorf("stdjson.Marshal parity: expected %s, got %s", expected, actual)
 		}
 		var parsed float64
@@ -181,7 +181,7 @@ func FuzzAppendFloat32(f *testing.F) {
 		}
 		if expected, err := stdjson.Marshal(val); err != nil {
 			t.Error(err)
-		} else if string(actual) != string(expected) {
+		} else if !bytes.Equal(actual, expected) {
 			t.Errorf("stdjson.Marshal parity: expected %s, got %s", expected, actual)
 		}
 		var parsed32 float32
@@ -317,7 +317,7 @@ func FuzzAppendTimeRFC3339(f *testing.F) {
 		// after conversion to the +14:00 extreme zone (16h headroom)
 		const year9999 = 253402300799 // 9999-12-31T23:59:59Z
 		if sec < 0 || sec > year9999-16*3600 {
-			sec = sec % (year9999 - 16*3600 + 1)
+			sec %= year9999 - 16*3600 + 1
 			if sec < 0 {
 				sec += year9999 - 16*3600 + 1
 			}

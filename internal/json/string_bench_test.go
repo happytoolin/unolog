@@ -62,6 +62,7 @@ func BenchmarkAppendStringTable96CharURL(b *testing.B) {
 }
 
 func benchmarkAppendString(b *testing.B, s string) {
+	b.Helper()
 	b.ReportAllocs()
 	dst := make([]byte, 0, 128)
 	for b.Loop() {

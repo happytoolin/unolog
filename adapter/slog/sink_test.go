@@ -21,7 +21,8 @@ func emit(t *testing.T, sink unolog.Sink, level unolog.Level, kv ...any) {
 	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "t"})
 	unolog.SetLevel(op.Context(), level)
 	if len(kv) > 0 {
-		unolog.Add(op.Context(), kv[0].(string), kv[1], kv[2:]...)
+		key, _ := kv[0].(string)
+		unolog.Add(op.Context(), key, kv[1], kv[2:]...)
 	}
 	op.End(nil)
 }

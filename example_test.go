@@ -83,7 +83,7 @@ func ExampleMustCompile() {
 func ExampleStart() {
 	rt := unolog.MustCompile(unolog.Config{Sink: printSink{os.Stdout}, SamplingRate: 1})
 
-	func() (err error) {
+	_ = func() (err error) {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{
 			Domain:      unolog.DomainJob,
 			Name:        "import",
