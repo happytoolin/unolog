@@ -1371,7 +1371,6 @@ func modelPanicField(payload any) map[string]any {
 // backward walk accepting the first field of the matching key+kind.
 func (m *lifeModel) scan() (outcome Outcome, hasOutcome bool, code int, hasCode bool, opCode int, hasOpCode bool) {
 	for _, f := range slices.Backward(m.appends) {
-
 		switch f.key {
 		case "op.outcome":
 			if !hasOutcome && f.kind == KindString {
@@ -2217,7 +2216,6 @@ func encodeValue(b *[]byte, v any) {
 		// valDuration decodes as int8(mult)*unit: pick the largest unit
 		// that divides x with an int8 multiplier.
 		for i, u := range slices.Backward(progDurUnits) {
-
 			if x%u == 0 {
 				m := x / u
 				if m >= -128 && m <= 127 {
