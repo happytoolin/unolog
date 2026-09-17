@@ -171,15 +171,13 @@ func TestSinkConcurrentWrites(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range 8 {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 100 {
 				op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "w"})
 				unolog.Add(op.Context(), "w", w, "i", i)
 				op.End(nil)
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 

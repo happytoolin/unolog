@@ -331,9 +331,7 @@ func TestSinkConcurrentWrites(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range writers {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			tag := "w" + strconv.Itoa(w)
 			for range writes {
 				op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: tag})
@@ -343,7 +341,7 @@ func TestSinkConcurrentWrites(t *testing.T) {
 				}
 				op.End(nil)
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 

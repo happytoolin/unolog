@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -121,15 +122,15 @@ func jsontextEncode(rec *unolog.Record) []byte {
 	} else {
 		seen := map[string]struct{}{}
 		kept := make([]int, 0, 16)
-		for i := len(fields) - 1; i >= 0; i-- {
-			if _, dup := seen[fields[i].Key()]; dup {
+		for i, field := range slices.Backward(fields) {
+			if _, dup := seen[field.Key()]; dup {
 				continue
 			}
-			seen[fields[i].Key()] = struct{}{}
+			seen[field.Key()] = struct{}{}
 			kept = append(kept, i)
 		}
-		for i := len(kept) - 1; i >= 0; i-- {
-			f := fields[kept[i]]
+		for _, k := range slices.Backward(kept) {
+			f := fields[k]
 			dst = append(dst, ',')
 			dst, _ = jsontext.AppendQuote(dst, f.Key())
 			dst = append(dst, ':')

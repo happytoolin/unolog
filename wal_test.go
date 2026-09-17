@@ -110,25 +110,21 @@ func TestWALGuardedProtocol(t *testing.T) {
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go func() { // watchdog-style snapshots
-		defer wg.Done()
+	wg.Go(func() { // watchdog-style snapshots
 		for range 2000 {
 			_, _ = ev.snapshotFields(genOf(ev))
 		}
-	}()
-	go func() { // guarded appends
-		defer wg.Done()
+	})
+	wg.Go(func() { // guarded appends
 		for i := range 2000 {
 			ev.append(ref.gen, fieldOf("guarded", i))
 		}
-	}()
-	go func() { // stragglers with stale generations
-		defer wg.Done()
+	})
+	wg.Go(func() { // stragglers with stale generations
 		for i := range 2000 {
 			ev.append(ref.gen+7, fieldOf("stale", i))
 		}
-	}()
+	})
 	wg.Wait()
 
 	for _, f := range ev.fields {
@@ -496,30 +492,26 @@ func TestStragglerStartLine(t *testing.T) {
 		mu.Unlock()
 	}
 
-	wg.Add(workers + 1) // owner + stragglers + releaser
-	go func() {         // releaser: fires the start line exactly once
-		defer wg.Done()
+	wg.Go(func() { // releaser: fires the start line exactly once
 		release()
-	}()
+	})
 
 	// Owner: churns requests; each round's event is (usually) the same
 	// pooled one op0 released, so the stale writes below constantly hit
 	// a live-then-recycled target.
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		enter()
 		for i := range rounds {
 			op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "churn"})
 			Add(op.Context(), "owner", i)
 			op.End(nil)
 		}
-	}()
+	})
 
 	// Stragglers: replay the full stale-write vocabulary against the
 	// recycled event, released at the same instant as the owner.
 	for s := range stragglers {
-		go func(s int) {
-			defer wg.Done()
+		wg.Go(func() {
 			enter()
 			for i := range rounds {
 				key := fmt.Sprintf("!BUG-straggler-%d", s)
@@ -533,7 +525,7 @@ func TestStragglerStartLine(t *testing.T) {
 				}
 				stragglerWrites.Add(1)
 			}
-		}(s)
+		})
 	}
 	wg.Wait()
 
@@ -779,17 +771,17 @@ func newSim(gen uint64, nStragglers int) *sim {
 
 func (s *sim) clone() *sim {
 	c := *s
-	c.ev.fields = append([]string(nil), s.ev.fields...)
-	c.landings = append([]string(nil), s.landings...)
-	c.log = append([]string(nil), s.log...)
+	c.ev.fields = slices.Clone(s.ev.fields)
+	c.landings = slices.Clone(s.landings)
+	c.log = slices.Clone(s.log)
 	c.snapshots = make([]simSnapshot, len(s.snapshots))
 	for i, sn := range s.snapshots {
-		c.snapshots[i] = simSnapshot{keys: append([]string(nil), sn.keys...), seq: sn.seq}
+		c.snapshots[i] = simSnapshot{keys: slices.Clone(sn.keys), seq: sn.seq}
 	}
-	c.plans = append([]stragglerPlan(nil), s.plans...)
-	c.stepsRun = append([]*simStep(nil), s.stepsRun...)
-	c.realSnapshots = append([][]string(nil), s.realSnapshots...)
-	c.postKeys = append([]string(nil), s.postKeys...)
+	c.plans = slices.Clone(s.plans)
+	c.stepsRun = slices.Clone(s.stepsRun)
+	c.realSnapshots = slices.Clone(s.realSnapshots)
+	c.postKeys = slices.Clone(s.postKeys)
 	c.flags = map[string]bool{}
 	maps.Copy(c.flags, s.flags)
 	return &c
@@ -1305,7 +1297,7 @@ func snapshotSteps() []simStep {
 		name: "snap-copy",
 		run: func(s *sim) {
 			s.snapshots = append(s.snapshots, simSnapshot{
-				keys: append([]string(nil), s.ev.fields...),
+				keys: slices.Clone(s.ev.fields),
 				seq:  s.seq,
 			})
 		},

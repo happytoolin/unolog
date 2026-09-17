@@ -297,9 +297,7 @@ func TestCrashStragglerStormOverRecycledPool(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range workers {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range perWorker {
 				op := Start(context.Background(), rt, OperationStart{Domain: DomainHTTP, Name: "request"})
 				mine := fmt.Sprintf("w%d-i%d", w, i)
@@ -308,15 +306,13 @@ func TestCrashStragglerStormOverRecycledPool(t *testing.T) {
 				// Stragglers begin after End returned: sealed no-ops.
 				var sw sync.WaitGroup
 				for s := range 4 {
-					sw.Add(1)
-					go func(s int) {
-						defer sw.Done()
+					sw.Go(func() {
 						Add(op.Context(), "straggler", fmt.Sprintf("w%d-i%d-s%d", w, i, s))
-					}(s)
+					})
 				}
 				sw.Wait()
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 

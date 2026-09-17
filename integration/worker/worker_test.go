@@ -338,16 +338,14 @@ func TestWorkerConcurrentJobs(t *testing.T) {
 	rt := unolog.MustCompile(unolog.Config{Sink: ts, SamplingRate: 1})
 	var wg sync.WaitGroup
 	for w := range 12 {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 100 {
 				op := Start(context.Background(), rt, JobMeta{Name: "worker", ID: "w"})
 				unolog.Add(op.Context(), "worker", w, "seq", i)
 				var err error
 				op.End(&err)
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 	if got := len(ts.Events()); got != 1200 {

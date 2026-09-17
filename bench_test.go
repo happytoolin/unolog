@@ -181,7 +181,7 @@ func BenchmarkEventSeal(b *testing.B) {
 func BenchmarkEventSnapshotFields(b *testing.B) {
 	ev := newEvent()
 	gen := ev.state.Load() >> walStateBits
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		ev.append(gen, fieldStr("k", "v"))
 	}
 	b.ReportAllocs()

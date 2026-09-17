@@ -794,7 +794,7 @@ func snapshotState(ev *event) poolState {
 	s := ev.state.Load()
 	state := walState(s & walStateMask)
 	return poolState{
-		fields:   append([]Field(nil), ev.fields...),
+		fields:   slices.Clone(ev.fields),
 		msg:      ev.msg,
 		level:    ev.requestedLevel,
 		hasLevel: ev.hasRequestedLvl,

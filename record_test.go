@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -472,7 +473,7 @@ func TestRecordEncodeSizeMonotonicProperty(t *testing.T) {
 				newKey += "x"
 			}
 			base := recOf(LevelInfo, "m", fields...)
-			grown := recOf(LevelInfo, "m", append(append([]Field(nil), fields...), fieldOf(newKey, rtFieldValue(rng, FieldKind(1+rng.IntN(11)))))...)
+			grown := recOf(LevelInfo, "m", append(slices.Clone(fields), fieldOf(newKey, rtFieldValue(rng, FieldKind(1+rng.IntN(11)))))...)
 			before, after := base.Encoded(), grown.Encoded()
 			if !bytes.Contains(after, []byte(`"`+newKey+`":`)) {
 				t.Fatalf("width %d iter %d: new key %q missing from %s", width, iter, newKey, after)
