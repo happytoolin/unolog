@@ -40,7 +40,7 @@ func (w *benchResponseWriter) WriteHeader(code int)        { w.status = code }
 var benchHeader = http.Header{}
 
 func BenchmarkRouterStd(b *testing.B) {
-	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+	req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 	handlerHappycontextAPI := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		unolog.Add(r.Context(), "user_id", "u_1")
 		w.WriteHeader(http.StatusNoContent)
@@ -147,7 +147,7 @@ func BenchmarkRouterGin(b *testing.B) {
 			unolog.Add(c.Request.Context(), "user_id", "u_1")
 			c.Status(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -168,7 +168,7 @@ func BenchmarkRouterGin(b *testing.B) {
 			)
 			c.Status(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -189,7 +189,7 @@ func BenchmarkRouterGin(b *testing.B) {
 			)
 			c.Status(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -210,7 +210,7 @@ func BenchmarkRouterGin(b *testing.B) {
 			)
 			c.Status(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -230,7 +230,7 @@ func BenchmarkRouterGin(b *testing.B) {
 				Msg("request_completed")
 			c.Status(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -247,7 +247,7 @@ func BenchmarkRouterEcho(b *testing.B) {
 			unolog.Add(c.Request().Context(), "user_id", "u_1")
 			return c.NoContent(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -268,7 +268,7 @@ func BenchmarkRouterEcho(b *testing.B) {
 			)
 			return c.NoContent(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -289,7 +289,7 @@ func BenchmarkRouterEcho(b *testing.B) {
 			)
 			return c.NoContent(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -310,7 +310,7 @@ func BenchmarkRouterEcho(b *testing.B) {
 			)
 			return c.NoContent(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -330,7 +330,7 @@ func BenchmarkRouterEcho(b *testing.B) {
 				Msg("request_completed")
 			return c.NoContent(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
 			rr := httptest.NewRecorder()
@@ -347,10 +347,13 @@ func BenchmarkRouterFiber(b *testing.B) {
 			unolog.Add(c.UserContext(), "user_id", "u_1")
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, -1)
+			res, _ := app.Test(req, -1)
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -367,10 +370,13 @@ func BenchmarkRouterFiber(b *testing.B) {
 			)
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, -1)
+			res, _ := app.Test(req, -1)
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -387,10 +393,13 @@ func BenchmarkRouterFiber(b *testing.B) {
 			)
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, -1)
+			res, _ := app.Test(req, -1)
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -407,10 +416,13 @@ func BenchmarkRouterFiber(b *testing.B) {
 			)
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, -1)
+			res, _ := app.Test(req, -1)
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -426,10 +438,13 @@ func BenchmarkRouterFiber(b *testing.B) {
 				Msg("request_completed")
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, -1)
+			res, _ := app.Test(req, -1)
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 }
@@ -442,10 +457,13 @@ func BenchmarkRouterFiberV3(b *testing.B) {
 			unolog.Add(c.Context(), "user_id", "u_1")
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			res, _ := app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -462,10 +480,13 @@ func BenchmarkRouterFiberV3(b *testing.B) {
 			)
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			res, _ := app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -482,10 +503,13 @@ func BenchmarkRouterFiberV3(b *testing.B) {
 			)
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			res, _ := app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -502,10 +526,13 @@ func BenchmarkRouterFiberV3(b *testing.B) {
 			)
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			res, _ := app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 
@@ -521,10 +548,13 @@ func BenchmarkRouterFiberV3(b *testing.B) {
 				Msg("request_completed")
 			return c.SendStatus(http.StatusNoContent)
 		})
-		req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
+		req := httptest.NewRequestWithContext(b.Context(), http.MethodGet, "/orders/123", nil)
 		b.ReportAllocs()
 		for b.Loop() {
-			_, _ = app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			res, _ := app.Test(req, fiberv3.TestConfig{Timeout: -1})
+			if res != nil {
+				_ = res.Body.Close()
+			}
 		}
 	})
 }

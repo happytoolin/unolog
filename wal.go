@@ -70,7 +70,7 @@ type walRef struct {
 }
 
 func newEvent() *event {
-	ev := eventPool.Get().(*event)
+	ev := eventPool.Get().(*event) //nolint:forcetypeassert // the pool's New stores exactly *event
 	ev.reset()
 	return ev
 }

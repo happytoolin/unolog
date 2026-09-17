@@ -184,8 +184,8 @@ func TestWorkerRetryMetadata(t *testing.T) {
 	}
 	if e, ok := ev.Lookup("error"); !ok {
 		t.Fatal("missing error field")
-	} else if em := e.(map[string]any); em["message"] != "retryable" {
-		t.Fatalf("error.message = %v", em["message"])
+	} else if em, ok := e.(map[string]any); !ok || em["message"] != "retryable" {
+		t.Fatalf("error.message = %v", e)
 	}
 }
 
@@ -260,8 +260,8 @@ func TestWorkerJobPanic(t *testing.T) {
 	}
 	if p, ok := ev.Lookup("panic"); !ok {
 		t.Fatal("missing panic field")
-	} else if pm := p.(map[string]any); pm["value"] != "worker-boom" {
-		t.Fatalf("panic.value = %v", pm["value"])
+	} else if pm, ok := p.(map[string]any); !ok || pm["value"] != "worker-boom" {
+		t.Fatalf("panic.value = %v", p)
 	}
 }
 
@@ -338,16 +338,14 @@ func TestWorkerConcurrentJobs(t *testing.T) {
 	rt := unolog.MustCompile(unolog.Config{Sink: ts, SamplingRate: 1})
 	var wg sync.WaitGroup
 	for w := range 12 {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 100 {
 				op := Start(context.Background(), rt, JobMeta{Name: "worker", ID: "w"})
 				unolog.Add(op.Context(), "worker", w, "seq", i)
 				var err error
 				op.End(&err)
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 	if got := len(ts.Events()); got != 1200 {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/happytoolin/unolog"
 	uslog "github.com/happytoolin/unolog/adapter/slog"
@@ -48,5 +49,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	_ = http.ListenAndServe(":8104", mw(mux))
+	srv := &http.Server{
+		Addr:              ":8104",
+		Handler:           mw(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	_ = srv.ListenAndServe()
 }

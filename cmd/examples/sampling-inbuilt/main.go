@@ -34,7 +34,12 @@ func main() {
 		handleUser(w, r, "vip")
 	})
 
-	_ = http.ListenAndServe(":8109", mw(mux))
+	srv := &http.Server{
+		Addr:              ":8109",
+		Handler:           mw(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	_ = srv.ListenAndServe()
 }
 
 func handleUser(w http.ResponseWriter, r *http.Request, tier string) {

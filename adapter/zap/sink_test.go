@@ -18,7 +18,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-func emit(t *testing.T, sink unolog.Sink, mutate func(ctx context.Context)) *observer.ObservedLogs {
+func emit(t *testing.T, mutate func(ctx context.Context)) *observer.ObservedLogs {
 	t.Helper()
 	core, logs := observer.New(zapcore.DebugLevel)
 	rt := unolog.MustCompile(unolog.Config{Sink: New(gozap.New(core)), SamplingRate: 1})
@@ -40,7 +40,7 @@ func emitErr(t *testing.T, err error) *observer.ObservedLogs {
 }
 
 func TestSinkWriteMapsLevelAndMessage(t *testing.T) {
-	logs := emit(t, nil, func(ctx context.Context) {
+	logs := emit(t, func(ctx context.Context) {
 		unolog.Add(ctx, "http.status", 500, "user_id", "u_1")
 		unolog.SetLevel(ctx, unolog.LevelError)
 	})
@@ -80,7 +80,7 @@ func TestSinkWriteMapsAllKnownLevels(t *testing.T) {
 			if tt.err != nil {
 				logs = emitErr(t, tt.err)
 			} else {
-				logs = emit(t, nil, tt.mutate)
+				logs = emit(t, tt.mutate)
 			}
 			entry := logs.All()[0]
 			if entry.Level != tt.want {
@@ -171,15 +171,13 @@ func TestSinkConcurrentWrites(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range 8 {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 100 {
 				op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "w"})
 				unolog.Add(op.Context(), "w", w, "i", i)
 				op.End(nil)
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 

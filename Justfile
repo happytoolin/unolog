@@ -18,10 +18,21 @@ tidy:
   done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
 
+# Lint every module with the strict config (pinned linter version).
 lint:
-  go vet ./...
-  golangci-lint run ./...
-  staticcheck ./...
+  while IFS= read -r modfile; do \
+    moddir="$(dirname "$modfile")"; \
+    echo "== linting $moddir =="; \
+    (cd "$moddir" && go vet ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...); \
+  done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+
+# Scan every module for reachable vulnerabilities.
+vuln:
+  while IFS= read -r modfile; do \
+    moddir="$(dirname "$modfile")"; \
+    echo "== govulncheck $moddir =="; \
+    (cd "$moddir" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...); \
+  done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
 test:
   while IFS= read -r modfile; do \

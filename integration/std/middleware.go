@@ -108,7 +108,7 @@ func (ow onlyWriter) Write(p []byte) (int, error) { return ow.rw.Write(p) }
 // it is a no-op when the underlying writer does not implement it.
 func (rw *responseWriter) CloseNotify() <-chan bool {
 	//lint:ignore SA1019 v0 parity: keep the deprecated interface assertable for existing users
-	if cn, ok := rw.ResponseWriter.(http.CloseNotifier); ok {
+	if cn, ok := rw.ResponseWriter.(http.CloseNotifier); ok { //nolint:staticcheck // v0 parity: keep the deprecated interface assertable
 		return cn.CloseNotify()
 	}
 	return nil
@@ -119,7 +119,7 @@ var trackerPool = sync.Pool{
 }
 
 func getTracker(w http.ResponseWriter) *responseWriter {
-	tracker := trackerPool.Get().(*responseWriter)
+	tracker := trackerPool.Get().(*responseWriter) //nolint:forcetypeassert // the pool's New stores exactly *responseWriter
 	tracker.ResponseWriter = w
 	tracker.statusCode = 0
 	tracker.wroteHeader = false

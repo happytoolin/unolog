@@ -54,7 +54,7 @@ func TestAdapterSlogMiddleware(t *testing.T) {
 
 	t.Run("successful request logs event", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/456", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/456", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -73,7 +73,7 @@ func TestAdapterSlogMiddleware(t *testing.T) {
 
 	t.Run("request with debug flag", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/789?debug=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/789?debug=1", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 
@@ -84,7 +84,7 @@ func TestAdapterSlogMiddleware(t *testing.T) {
 
 	t.Run("request with failure", func(t *testing.T) {
 		buf.Reset()
-		req := httptest.NewRequest("GET", "/users/999?fail=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/999?fail=1", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 

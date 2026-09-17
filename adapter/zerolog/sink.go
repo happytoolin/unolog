@@ -84,7 +84,7 @@ func (v *loggerView) plain() bool {
 // drift) conservatively disables both detection paths.
 var timestampHookSample = func() (hook gozerolog.Hook) {
 	l := gozerolog.New(nil).With().Timestamp().Logger()
-	view := (*loggerView)(unsafe.Pointer(&l))
+	view := (*loggerView)(unsafe.Pointer(&l)) //nolint:gosec // deliberate: layout mirror guarded by checkLoggerLayout
 	if len(view.hooks) > 0 {
 		hook = view.hooks[0]
 	}
@@ -199,7 +199,7 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 	if s == nil || s.logger == nil || rec == nil {
 		return
 	}
-	view := (*loggerView)(unsafe.Pointer(s.logger))
+	view := (*loggerView)(unsafe.Pointer(s.logger)) //nolint:gosec // deliberate: layout mirror guarded by checkLoggerLayout
 	if s.writeEncoded(view, rec) {
 		return
 	}

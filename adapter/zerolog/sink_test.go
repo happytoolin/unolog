@@ -57,7 +57,11 @@ func TestSinkWriteMapsLevelAndFields(t *testing.T) {
 	if payload["http.status"] != float64(500) {
 		t.Fatalf("http.status = %v", payload["http.status"])
 	}
-	if _, err := time.Parse(time.RFC3339, payload["time"].(string)); err != nil {
+	tm, ok := payload["time"].(string)
+	if !ok {
+		t.Fatalf("time is not a string: %v", payload["time"])
+	}
+	if _, err := time.Parse(time.RFC3339, tm); err != nil {
 		t.Fatalf("time not RFC3339: %v", payload["time"])
 	}
 }
@@ -485,15 +489,13 @@ func TestSinkConcurrentWrites(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range 8 {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 100 {
 				op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "w"})
 				unolog.Add(op.Context(), "w", w, "i", i)
 				op.End(nil)
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 

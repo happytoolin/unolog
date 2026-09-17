@@ -14,8 +14,8 @@ func (discardSink) Write(context.Context, *unolog.Record) {}
 
 // runtimeFor returns a compiled runtime with the given sink and full
 // sampling (kept events), as the gates measure the kept path.
-func runtimeFor(sink unolog.Sink) *unolog.Runtime {
-	return unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1})
+func runtimeFor() *unolog.Runtime {
+	return unolog.MustCompile(unolog.Config{Sink: discardSink{}, SamplingRate: 1})
 }
 
 // BenchmarkWALAddStableKeys measures the single-pair Add gate by
@@ -23,7 +23,7 @@ func runtimeFor(sink unolog.Sink) *unolog.Runtime {
 // shape). Fresh operations per iteration keep the WAL at steady state —
 // no unbounded growth, no pool return noise.
 func BenchmarkWALAddStableKeys(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	ctx := context.Background()
 	b.Run("start_only", func(b *testing.B) {
 		b.ReportAllocs()
@@ -42,7 +42,7 @@ func BenchmarkWALAddStableKeys(b *testing.B) {
 
 // BenchmarkWALAddMany measures the variadic multi-pair Add shape.
 func BenchmarkWALAddMany(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"})
 	ctx := op.Context()
 	b.ReportAllocs()
@@ -77,7 +77,7 @@ func benchmarkFields(ctx context.Context, n int) {
 // (≤ 250 ns / ≤ 4 allocs), measured on the same corpus as the v0.4.0
 // baseline: full OperationStart metadata plus one multi-pair Add.
 func BenchmarkOperationLifecycle(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	b.ReportAllocs()
 	for b.Loop() {
 		var err error
@@ -97,7 +97,7 @@ func BenchmarkOperationLifecycle(b *testing.B) {
 // BenchmarkOperationLifecycle12Fields is the same kept lifecycle with
 // the 12-field medium corpus (the sink-axis event shape).
 func BenchmarkOperationLifecycle12Fields(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
@@ -109,7 +109,7 @@ func BenchmarkOperationLifecycle12Fields(b *testing.B) {
 // BenchmarkOperationLifecycleSparse is the kept lifecycle with no user
 // fields — the floor of the core machinery.
 func BenchmarkOperationLifecycleSparse(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{})
@@ -185,7 +185,7 @@ func BenchmarkOperationPolicyScale(b *testing.B) {
 // BenchmarkNonHTTPManualLifecycle is the background-job shape with an
 // error result: explicit domain/name/id plus a few fields.
 func BenchmarkNonHTTPManualLifecycle(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	b.ReportAllocs()
 	for b.Loop() {
 		var err error = errBench
@@ -203,7 +203,7 @@ func (*benchError) Error() string { return "bench failure" }
 
 // BenchmarkNonHTTPBackgroundJob is the success job shape.
 func BenchmarkNonHTTPBackgroundJob(b *testing.B) {
-	rt := runtimeFor(discardSink{})
+	rt := runtimeFor()
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "digest", ID: "d-9"})

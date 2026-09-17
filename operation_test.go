@@ -79,8 +79,8 @@ func TestLifecycleBasicEmit(t *testing.T) {
 	}
 	if errField, ok := ev.Lookup("error"); !ok {
 		t.Error("missing structured error field")
-	} else if m := errField.(map[string]any); m["message"] != "db down" {
-		t.Errorf("error.message = %v", m["message"])
+	} else if m, ok := errField.(map[string]any); !ok || m["message"] != "db down" {
+		t.Errorf("error.message = %v", errField)
 	}
 }
 
@@ -135,8 +135,8 @@ func TestLifecyclePanicCapturedAndRepanicked(t *testing.T) {
 	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "boom"})
 
 	func() {
-		defer func() { recover() }() // swallows End's re-panic
-		defer op.End(nil)            // direct defer: observes the panic
+		defer func() { _ = recover() }() // swallows End's re-panic
+		defer op.End(nil)                // direct defer: observes the panic
 		panic("kaboom")
 	}()
 
@@ -149,8 +149,8 @@ func TestLifecyclePanicCapturedAndRepanicked(t *testing.T) {
 	}
 	if p, ok := ev.Lookup("panic"); !ok {
 		t.Error("missing panic field")
-	} else if pm := p.(map[string]any); pm["value"] != "kaboom" {
-		t.Errorf("panic.value = %v", pm["value"])
+	} else if pm, ok := p.(map[string]any); !ok || pm["value"] != "kaboom" {
+		t.Errorf("panic.value = %v", p)
 	}
 	if ev.Level() != LevelError {
 		t.Errorf("level = %v", ev.Level())
@@ -207,7 +207,7 @@ func TestOutcomePrecedence(t *testing.T) {
 			c.setup(op.Context())
 			if c.panicked != nil {
 				func() {
-					defer func() { recover() }()
+					defer func() { _ = recover() }()
 					defer op.End(nil)
 					panic(c.panicked)
 				}()
@@ -215,7 +215,8 @@ func TestOutcomePrecedence(t *testing.T) {
 				op.End(&c.err)
 			}
 			got, _ := ts.Events()[0].Lookup("op.outcome")
-			if Outcome(got.(string)) != c.want {
+			outcome, ok := got.(string)
+			if !ok || Outcome(outcome) != c.want {
 				t.Fatalf("outcome = %v, want %v", got, c.want)
 			}
 		})
@@ -237,8 +238,8 @@ func TestPanicBeatsErrorWhenCoDelivered(t *testing.T) {
 
 	err := errors.New("original error")
 	func() {
-		defer func() { recover() }() // swallow End's re-panic
-		defer op.End(&err)           // direct defer: observes the panic
+		defer func() { _ = recover() }() // swallow End's re-panic
+		defer op.End(&err)               // direct defer: observes the panic
 		panic("panic value")
 	}()
 
@@ -385,6 +386,8 @@ func TestSampleInputCodeSurfacesOpCode(t *testing.T) {
 				jobCode, jobStatus = in.Code, in.StatusCode
 			case DomainHTTP:
 				httpCode = in.Code
+			default:
+				t.Fatalf("unexpected domain %q", in.Domain)
 			}
 			return true
 		}
@@ -488,7 +491,7 @@ func TestNilRuntimeNoop(t *testing.T) {
 func TestAddNoEventNoop(t *testing.T) {
 	Add(context.Background(), "k", 1) // no panic
 	//lint:ignore SA1012 intentional: pin the nil-context no-op contract
-	Add(nil, "k", 1)
+	Add(nil, "k", 1) //nolint:staticcheck // intentional: pin the nil-context no-op contract
 	Error(context.Background(), errors.New("x"))
 	SetMessage(context.Background(), "m")
 	SetRoute(context.Background(), "/r")
@@ -540,7 +543,7 @@ func TestOperationContextReachesSink(t *testing.T) {
 	type ctxKey struct{}
 	var gotCtx context.Context
 	rt := MustCompile(Config{
-		Sink:         sinkFunc(func(ctx context.Context, rec *Record) { gotCtx = ctx }),
+		Sink:         sinkFunc(func(ctx context.Context, rec *Record) { gotCtx = ctx }), //nolint:fatcontext // the sink captures the request ctx and derives nothing
 		SamplingRate: 1,
 	})
 	parent := context.WithValue(context.Background(), ctxKey{}, "request-value")

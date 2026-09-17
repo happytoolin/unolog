@@ -76,7 +76,7 @@ func rtFieldValue(rng *rand.Rand, kind FieldKind) any {
 		if edge(0.3) {
 			return uint64(math.MaxUint64)
 		}
-		return uint64(rng.Uint64())
+		return rng.Uint64()
 	case KindFloat:
 		switch rng.IntN(8) {
 		case 0:
@@ -153,7 +153,7 @@ func rtWireCheck(t *testing.T, kind FieldKind, val any, raw []byte) {
 	f := fieldOf("k", val)
 	switch kind {
 	case KindFloat:
-		fv := val.(float64)
+		fv := mustValue[float64](val)
 		if math.IsNaN(fv) || math.IsInf(fv, 0) {
 			var s string
 			if err := json.Unmarshal(raw, &s); err != nil {
@@ -182,6 +182,8 @@ func rtWireCheck(t *testing.T, kind FieldKind, val any, raw []byte) {
 			}
 			return
 		}
+	default:
+		// Remaining kinds take the generic check below.
 	}
 	if err := checkFieldWire(f, raw); err != nil {
 		t.Fatalf("%v", err)
@@ -277,7 +279,9 @@ func decodeLineStrict(t *testing.T, line []byte) (map[string]json.RawMessage, []
 	// ordered re-walk for order assertions
 	var ordered []rawMember
 	dec2 := json.NewDecoder(bytes.NewReader(line))
-	dec2.Token() // {
+	if _, err := dec2.Token(); err != nil { // consume the opening "{"
+		t.Fatalf("tokenize: %v", err)
+	}
 	for {
 		tok, err := dec2.Token()
 		if err != nil {
@@ -362,6 +366,7 @@ func TestEncodedRoundTripAllKinds(t *testing.T) {
 
 func rawStringIs(want string) func(*testing.T, json.RawMessage) {
 	return func(t *testing.T, raw json.RawMessage) {
+		t.Helper()
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			t.Fatalf("not a string: %s (%v)", raw, err)
@@ -374,6 +379,7 @@ func rawStringIs(want string) func(*testing.T, json.RawMessage) {
 
 func rawNumberIs(want string) func(*testing.T, json.RawMessage) {
 	return func(t *testing.T, raw json.RawMessage) {
+		t.Helper()
 		if n := strings.TrimPrefix(string(raw), `"`); n != want {
 			t.Fatalf("number = %s, want %s", raw, want)
 		}
@@ -382,6 +388,7 @@ func rawNumberIs(want string) func(*testing.T, json.RawMessage) {
 
 func rawIs(want string) func(*testing.T, json.RawMessage) {
 	return func(t *testing.T, raw json.RawMessage) {
+		t.Helper()
 		if string(raw) != want {
 			t.Fatalf("value = %s, want %s", raw, want)
 		}
@@ -446,7 +453,7 @@ func TestEncodedRoundTripProperty(t *testing.T) {
 			var fnum float64
 			switch wf.kind {
 			case KindString:
-				if err := json.Unmarshal(raw, &s); err != nil || (!utf8.ValidString(wf.str) && err != nil) {
+				if err := json.Unmarshal(raw, &s); err != nil {
 					t.Fatalf("i=%d %q: %v", i, k, err)
 				}
 				if utf8.ValidString(wf.str) && s != wf.str {
@@ -465,6 +472,8 @@ func TestEncodedRoundTripProperty(t *testing.T) {
 				if err := json.Unmarshal(raw, &ms); err != nil || ms != float64(wf.num)/float64(time.Millisecond) {
 					t.Fatalf("i=%d %q: duration round-trip %v != %v", i, k, ms, float64(wf.num)/float64(time.Millisecond))
 				}
+			default:
+				t.Fatalf("i=%d %q: unhandled kind %v", i, k, wf.kind)
 			}
 		}
 	}
@@ -730,8 +739,8 @@ func TestChainSamplerProperty(t *testing.T) {
 	for i := range 5000 {
 		c := chainCase{
 			hasErr:    rng.Uint64()&1 == 0,
-			code:      int(rng.IntN(700)),
-			status:    int(rng.IntN(700)),
+			code:      rng.IntN(700),
+			status:    rng.IntN(700),
 			duration:  time.Duration(rng.IntN(200)-50) * time.Millisecond,
 			path:      []string{"", "/", "/api/v1/items", "/healthz", "/other"}[rng.IntN(5)],
 			keepErr:   rng.Uint64()&1 == 0,
@@ -794,7 +803,7 @@ func snapshotState(ev *event) poolState {
 	s := ev.state.Load()
 	state := walState(s & walStateMask)
 	return poolState{
-		fields:   append([]Field(nil), ev.fields...),
+		fields:   slices.Clone(ev.fields),
 		msg:      ev.msg,
 		level:    ev.requestedLevel,
 		hasLevel: ev.hasRequestedLvl,
@@ -1213,6 +1222,16 @@ func executeProgram(prog lifeProgram) *lifeSink {
 // operation (shared by the lifecycle executor and the sampling and
 // pool-safety properties, which wire their own runtimes). Stragglers
 // after a plain End must no-op; a panic-End unwinds the stream.
+// mustValue asserts the decoded operand's type. The program decoder
+// guarantees the type, so a mismatch is a model bug, not input.
+func mustValue[T any](v any) T {
+	typed, ok := v.(T)
+	if !ok {
+		panic(fmt.Sprintf("operand type: got %T", v))
+	}
+	return typed
+}
+
 func executeProgramOn(prog lifeProgram, op *Operation) {
 	ctx := op.Context()
 	ended := false
@@ -1228,13 +1247,13 @@ func executeProgramOn(prog lifeProgram, op *Operation) {
 			}
 			Add(ctx, o.key, o.val, kv...)
 		case opErr:
-			Error(ctx, o.val.(error))
+			Error(ctx, mustValue[error](o.val))
 		case opSetMsg:
-			SetMessage(ctx, o.val.(string))
+			SetMessage(ctx, mustValue[string](o.val))
 		case opSetLevel:
-			SetLevel(ctx, o.val.(Level))
+			SetLevel(ctx, mustValue[Level](o.val))
 		case opSetRoute:
-			SetRoute(ctx, o.val.(string))
+			SetRoute(ctx, mustValue[string](o.val))
 		case opEndErr:
 			if ended {
 				continue // one-shot End; later ends are no-ops
@@ -1313,18 +1332,18 @@ func buildModel(prog lifeProgram) *lifeModel {
 			}
 		case opErr:
 			m.errOp = true
-			m.append(Field{key: "error", kind: KindAny, val: modelErrorField(o.val.(error))})
+			m.append(Field{key: "error", kind: KindAny, val: modelErrorField(mustValue[error](o.val))})
 		case opSetMsg:
-			if msg := o.val.(string); msg != "" {
+			if msg := mustValue[string](o.val); msg != "" {
 				m.msg = msg
 			}
 		case opSetLevel:
-			if lvl := o.val.(Level); IsValidLevel(lvl) {
+			if lvl := mustValue[Level](o.val); IsValidLevel(lvl) {
 				m.level = lvl
 				m.hasLevel = true
 			}
 		case opSetRoute:
-			if route := o.val.(string); route != "" {
+			if route := mustValue[string](o.val); route != "" {
 				m.append(fieldStr("http.route", route))
 			}
 		case opEndErr:
@@ -1371,7 +1390,6 @@ func modelPanicField(payload any) map[string]any {
 // backward walk accepting the first field of the matching key+kind.
 func (m *lifeModel) scan() (outcome Outcome, hasOutcome bool, code int, hasCode bool, opCode int, hasOpCode bool) {
 	for _, f := range slices.Backward(m.appends) {
-
 		switch f.key {
 		case "op.outcome":
 			if !hasOutcome && f.kind == KindString {
@@ -1554,7 +1572,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindString:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			return fmt.Errorf("string member %q is not a JSON string: %v (raw %s)", f.key, err, raw)
+			return fmt.Errorf("string member %q is not a JSON string: %w (raw %s)", f.key, err, raw)
 		}
 		if utf8.ValidString(f.str) && s != f.str {
 			return fmt.Errorf("string %q: wire %q != modeled %q", f.key, s, f.str)
@@ -1563,7 +1581,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindInt:
 		n, err := wireNumber(raw)
 		if err != nil {
-			return fmt.Errorf("int member %q: %v", f.key, err)
+			return fmt.Errorf("int member %q: %w", f.key, err)
 		}
 		if n.String() != strconv.FormatInt(f.num, 10) {
 			return fmt.Errorf("int %q: wire %s != %d", f.key, n, f.num)
@@ -1572,7 +1590,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindUint:
 		n, err := wireNumber(raw)
 		if err != nil {
-			return fmt.Errorf("uint member %q: %v", f.key, err)
+			return fmt.Errorf("uint member %q: %w", f.key, err)
 		}
 		if n.String() != strconv.FormatUint(uint64(f.num), 10) {
 			return fmt.Errorf("uint %q: wire %s != %d", f.key, n, uint64(f.num))
@@ -1581,7 +1599,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindFloat:
 		v, err := strconv.ParseFloat(string(raw), 64)
 		if err != nil {
-			return fmt.Errorf("float member %q: %v (raw %s)", f.key, err, raw)
+			return fmt.Errorf("float member %q: %w (raw %s)", f.key, err, raw)
 		}
 		if v != f.f {
 			return fmt.Errorf("float %q: wire %v != %v", f.key, v, f.f)
@@ -1590,7 +1608,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindFloat32:
 		v, err := strconv.ParseFloat(string(raw), 32)
 		if err != nil {
-			return fmt.Errorf("float32 member %q: %v (raw %s)", f.key, err, raw)
+			return fmt.Errorf("float32 member %q: %w (raw %s)", f.key, err, raw)
 		}
 		if float32(v) != float32(f.f) {
 			return fmt.Errorf("float32 %q: wire %v != %v", f.key, float32(v), float32(f.f))
@@ -1613,7 +1631,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindTime:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			return fmt.Errorf("time member %q is not a string: %v", f.key, err)
+			return fmt.Errorf("time member %q is not a string: %w", f.key, err)
 		}
 		if want := f.t.Format(time.RFC3339); s != want {
 			return fmt.Errorf("time %q: wire %q != %q", f.key, s, want)
@@ -1622,7 +1640,7 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindDuration:
 		v, err := strconv.ParseFloat(string(raw), 64)
 		if err != nil {
-			return fmt.Errorf("duration member %q: %v", f.key, err)
+			return fmt.Errorf("duration member %q: %w", f.key, err)
 		}
 		if want := float64(f.num) / float64(time.Millisecond); v != want {
 			return fmt.Errorf("duration %q: wire %v != %v ms", f.key, v, want)
@@ -1631,9 +1649,13 @@ func checkFieldWire(f Field, raw []byte) error {
 	case KindErr:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			return fmt.Errorf("err member %q is not a string: %v", f.key, err)
+			return fmt.Errorf("err member %q is not a string: %w", f.key, err)
 		}
-		if want := f.val.(error).Error(); s != want {
+		wantErr, ok := f.val.(error)
+		if !ok {
+			return fmt.Errorf("err member %q: value is %T, not an error", f.key, f.val)
+		}
+		if want := wantErr.Error(); s != want {
 			return fmt.Errorf("err %q: wire %q != %q", f.key, s, want)
 		}
 		return nil
@@ -1641,15 +1663,15 @@ func checkFieldWire(f Field, raw []byte) error {
 		var modelV, wireV any
 		modelBytes, err := json.Marshal(f.val)
 		if err != nil {
-			return fmt.Errorf("any member %q: modeled value not marshalable: %v", f.key, err)
+			return fmt.Errorf("any member %q: modeled value not marshalable: %w", f.key, err)
 		}
 		if err := json.Unmarshal(modelBytes, &modelV); err != nil {
-			return fmt.Errorf("any member %q: modeled JSON invalid: %v", f.key, err)
+			return fmt.Errorf("any member %q: modeled JSON invalid: %w", f.key, err)
 		}
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.UseNumber()
 		if err := dec.Decode(&wireV); err != nil {
-			return fmt.Errorf("any member %q: wire not parseable: %v", f.key, err)
+			return fmt.Errorf("any member %q: wire not parseable: %w", f.key, err)
 		}
 		if !jsonSemanticEqual(modelV, wireV) {
 			return fmt.Errorf("any %q: wire %v != modeled %v", f.key, wireV, modelV)
@@ -2004,7 +2026,7 @@ func programsEqual(a, b lifeProgram) bool {
 	}
 	for i := range a.ops {
 		x, y := &a.ops[i], &b.ops[i]
-		if x.kind != y.kind || x.key != y.key || string(x.raw) != string(y.raw) {
+		if x.kind != y.kind || x.key != y.key || !bytes.Equal(x.raw, y.raw) {
 			return false
 		}
 		if !valuesEqual(x.val, y.val) {
@@ -2070,8 +2092,7 @@ func TestLifecyclePropertyRandom(t *testing.T) {
 // the seed specs. Lossless for every seedPrograms entry.
 func encodeProgram(prog lifeProgram) []byte {
 	var b []byte
-	b = append(b, byte(prog.mode))
-	b = append(b, byte(indexOf(progDomains, prog.start)))
+	b = append(b, byte(prog.mode), byte(indexOf(progDomains, prog.start)))
 	for _, o := range prog.ops {
 		// opAdd with a string operand travels as opAddStr: the typed
 		// value table has no string kind (decoder-side strings come
@@ -2088,7 +2109,7 @@ func encodeProgram(prog lifeProgram) []byte {
 			b = append(b, keyByte(o.key))
 			encodeValue(&b, o.val)
 		case opAddStr:
-			s := o.val.(string)
+			s := mustValue[string](o.val)
 			b = append(b, keyByte(o.key), byte(len(s)))
 			b = append(b, s...)
 		case opAddVar:
@@ -2109,11 +2130,11 @@ func encodeProgram(prog lifeProgram) []byte {
 				encodeValue(&b, pr.val)
 			}
 		case opErr:
-			msg := o.val.(error).Error()
+			msg := mustValue[error](o.val).Error()
 			b = append(b, byte(len(msg)))
 			b = append(b, msg...)
 		case opSetMsg:
-			msg := o.val.(string)
+			msg := mustValue[string](o.val)
 			switch msg {
 			case "":
 				b = append(b, 0)
@@ -2124,9 +2145,9 @@ func encodeProgram(prog lifeProgram) []byte {
 				b = append(b, msg...)
 			}
 		case opSetLevel:
-			b = append(b, byte(indexOf(progLevels, o.val.(Level))))
+			b = append(b, byte(indexOf(progLevels, mustValue[Level](o.val))))
 		case opSetRoute:
-			switch route := o.val.(string); route {
+			switch route := mustValue[string](o.val); route {
 			case "":
 				b = append(b, 0)
 			case "/api/v1/items":
@@ -2140,13 +2161,13 @@ func encodeProgram(prog lifeProgram) []byte {
 				b = append(b, 0)
 				break
 			}
-			err := o.val.(error)
-			switch err {
-			case nil:
+			err := mustValue[error](o.val)
+			switch {
+			case err == nil:
 				b = append(b, 0)
-			case context.Canceled:
+			case errors.Is(err, context.Canceled):
 				b = append(b, 2)
-			case context.DeadlineExceeded:
+			case errors.Is(err, context.DeadlineExceeded):
 				b = append(b, 3)
 			default:
 				msg := err.Error()
@@ -2217,7 +2238,6 @@ func encodeValue(b *[]byte, v any) {
 		// valDuration decodes as int8(mult)*unit: pick the largest unit
 		// that divides x with an int8 multiplier.
 		for i, u := range slices.Backward(progDurUnits) {
-
 			if x%u == 0 {
 				m := x / u
 				if m >= -128 && m <= 127 {

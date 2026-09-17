@@ -77,6 +77,60 @@ jobs:
             exit 1
           fi
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@v6.2.0
+        with:
+          # The toolchain must satisfy the linter's own go directive (go 1.26);
+          # the modules themselves keep their go 1.25 floor.
+          go-version: '1.27.x'
+          check-latest: true
+          cache: true
+
+      - name: Lint all modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r modfile; do
+            moddir="$(dirname "$modfile")"
+            echo "== lint $moddir =="
+            (
+              cd "$moddir"
+              go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
+            )
+          done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@v6.2.0
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+          cache: true
+
+      - name: govulncheck all modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r modfile; do
+            moddir="$(dirname "$modfile")"
+            echo "== govulncheck $moddir =="
+            (
+              cd "$moddir"
+              go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+            )
+          done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

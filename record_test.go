@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,10 +44,10 @@ func TestRecordFieldsZeroCopy(t *testing.T) {
 
 func TestRecordLookup(t *testing.T) {
 	r := recOf(LevelInfo, "m", fieldOf("k", 1), fieldOf("k", 2), fieldOf("s", "x"))
-	if v, ok := r.Lookup("k"); !ok || v.(int64) != 2 {
+	if v, ok := r.Lookup("k"); !ok || v != int64(2) {
 		t.Fatalf("Lookup(k) = %v %v, want last value 2", v, ok)
 	}
-	if v, ok := r.Lookup("s"); !ok || v.(string) != "x" {
+	if v, ok := r.Lookup("s"); !ok || v != "x" {
 		t.Fatalf("Lookup(s) = %v %v", v, ok)
 	}
 	if _, ok := r.Lookup("missing"); ok {
@@ -171,8 +172,10 @@ func TestRecordEncodedShape(t *testing.T) {
 		t.Fatalf("dur = %v", payload["dur"])
 	}
 	// ordering: fields before time before message
-	if !(strings.Index(string(line), `"op.code"`) < strings.Index(string(line), `"time"`) &&
-		strings.Index(string(line), `"time"`) < strings.Index(string(line), `"message"`)) {
+	opCodeAt := bytes.Index(line, []byte(`"op.code"`))
+	timeAt := bytes.Index(line, []byte(`"time"`))
+	messageAt := bytes.Index(line, []byte(`"message"`))
+	if opCodeAt >= timeAt || timeAt >= messageAt {
 		t.Fatalf("field order wrong: %s", line)
 	}
 }
@@ -472,7 +475,7 @@ func TestRecordEncodeSizeMonotonicProperty(t *testing.T) {
 				newKey += "x"
 			}
 			base := recOf(LevelInfo, "m", fields...)
-			grown := recOf(LevelInfo, "m", append(append([]Field(nil), fields...), fieldOf(newKey, rtFieldValue(rng, FieldKind(1+rng.IntN(11)))))...)
+			grown := recOf(LevelInfo, "m", append(slices.Clone(fields), fieldOf(newKey, rtFieldValue(rng, FieldKind(1+rng.IntN(11)))))...)
 			before, after := base.Encoded(), grown.Encoded()
 			if !bytes.Contains(after, []byte(`"`+newKey+`":`)) {
 				t.Fatalf("width %d iter %d: new key %q missing from %s", width, iter, newKey, after)
@@ -502,7 +505,11 @@ func TestJSONSinkWritesEncodedRecord(t *testing.T) {
 	if payload["level"] != "error" || payload["message"] != "job failed" || payload["op.code"] != 500.0 {
 		t.Fatalf("payload = %v", payload)
 	}
-	if _, err := time.Parse(time.RFC3339, payload["time"].(string)); err != nil {
+	tm, ok := payload["time"].(string)
+	if !ok {
+		t.Fatalf("time is not a string: %v", payload["time"])
+	}
+	if _, err := time.Parse(time.RFC3339, tm); err != nil {
 		t.Fatalf("time not RFC3339: %v", payload["time"])
 	}
 }
@@ -620,10 +627,12 @@ func TestTestSinkCapture(t *testing.T) {
 	if ev.Level() != LevelWarn || ev.Message() != "m" {
 		t.Fatalf("event = %v %v", ev.Level(), ev.Message())
 	}
-	if v, ok := ev.Lookup("i"); !ok || v.(int64) != 1 {
+	if v, ok := ev.Lookup("i"); !ok || v != int64(1) {
 		t.Fatalf("i = %v", v)
 	}
-	if v, _ := ev.Lookup("any"); v.(map[string]any)["k"] != 1 {
+	v, _ := ev.Lookup("any")
+	m, ok := v.(map[string]any)
+	if !ok || m["k"] != 1 {
 		// map values are deep-copied on capture; originals may mutate freely
 		t.Fatalf("any = %v", v)
 	}
@@ -636,7 +645,8 @@ func TestTestSinkCopiesMutableValues(t *testing.T) {
 	shared["k"] = 999 // mutate after capture
 	ev := ts.Events()[0]
 	v, _ := ev.Lookup("m")
-	if v.(map[string]any)["k"] != 1 {
+	m, ok := v.(map[string]any)
+	if !ok || m["k"] != 1 {
 		t.Fatal("capture retained a reference to caller state")
 	}
 	ts.Reset()

@@ -52,7 +52,7 @@ func TestRouterFiberv3Middleware(t *testing.T) {
 	})
 
 	t.Run("successful request", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/users/123", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123", nil)
 		resp, err := app.Test(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -73,22 +73,24 @@ func TestRouterFiberv3Middleware(t *testing.T) {
 	})
 
 	t.Run("request with debug", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/users/123?debug=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123?debug=1", nil)
 		resp, err := app.Test(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected status 200, got %d", resp.StatusCode)
 		}
 	})
 
 	t.Run("request with failure", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/users/123?fail=1", nil)
+		req := httptest.NewRequestWithContext(t.Context(), "GET", "/users/123?fail=1", nil)
 		resp, err := app.Test(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusInternalServerError {
 			t.Errorf("expected status 500, got %d", resp.StatusCode)
 		}

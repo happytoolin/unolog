@@ -57,5 +57,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	_ = http.ListenAndServe(":8110", mw(mux))
+	srv := &http.Server{
+		Addr:              ":8110",
+		Handler:           mw(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	_ = srv.ListenAndServe()
 }

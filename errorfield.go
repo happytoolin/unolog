@@ -110,7 +110,7 @@ func deepestUnwrappedError(err error) error {
 
 func sameError(a, b error) bool {
 	if a == nil || b == nil {
-		return a == b
+		return a == b //nolint:errorlint // exact identity is the point: cycle detection
 	}
 	if reflect.TypeOf(a) != reflect.TypeOf(b) {
 		return false
@@ -118,7 +118,7 @@ func sameError(a, b error) bool {
 	if !isComparableError(a) {
 		return false
 	}
-	return a == b
+	return a == b //nolint:errorlint // exact identity is the point: cycle detection
 }
 
 func isComparableError(err error) bool {

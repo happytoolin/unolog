@@ -159,7 +159,7 @@ func TestCrashPanicNilValue(t *testing.T) {
 		defer func() { _ = recover() }()
 		op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "j"})
 		defer op.End(nil)
-		panic(nil)
+		panic(nil) //nolint:govet // deliberate: the nil-panic path is under test
 	}()
 	evs := ts.Events()
 	if len(evs) != 1 {
@@ -297,9 +297,7 @@ func TestCrashStragglerStormOverRecycledPool(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for w := range workers {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range perWorker {
 				op := Start(context.Background(), rt, OperationStart{Domain: DomainHTTP, Name: "request"})
 				mine := fmt.Sprintf("w%d-i%d", w, i)
@@ -308,15 +306,13 @@ func TestCrashStragglerStormOverRecycledPool(t *testing.T) {
 				// Stragglers begin after End returned: sealed no-ops.
 				var sw sync.WaitGroup
 				for s := range 4 {
-					sw.Add(1)
-					go func(s int) {
-						defer sw.Done()
+					sw.Go(func() {
 						Add(op.Context(), "straggler", fmt.Sprintf("w%d-i%d-s%d", w, i, s))
-					}(s)
+					})
 				}
 				sw.Wait()
 			}
-		}(w)
+		})
 	}
 	wg.Wait()
 
@@ -947,23 +943,23 @@ func TestCrashNilReceiversAndArgs(t *testing.T) {
 	}
 	// Start with nil runtime and nil ctx.
 	//lint:ignore SA1012 nil contexts are this test's charter
-	op := Start(nil, nil, OperationStart{})
+	op := Start(nil, nil, OperationStart{}) //nolint:staticcheck // nil contexts are this test's charter
 	if op.End(nil) {
 		t.Fatal("nil runtime emitted")
 	}
 	// Context helpers with nil/no-event ctx: silent no-ops.
 	//lint:ignore SA1012 nil contexts are this test's charter
-	Add(nil, "k", "v")
+	Add(nil, "k", "v") //nolint:staticcheck // nil contexts are this test's charter
 	Add(context.Background(), "k", "v")
 	//lint:ignore SA1012 nil contexts are this test's charter
-	Error(nil, nil)
+	Error(nil, nil) //nolint:staticcheck // nil contexts are this test's charter
 	Error(context.Background(), nil)
 	//lint:ignore SA1012 nil contexts are this test's charter
-	SetMessage(nil, "")
+	SetMessage(nil, "") //nolint:staticcheck // nil contexts are this test's charter
 	//lint:ignore SA1012 nil contexts are this test's charter
-	SetRoute(nil, "")
+	SetRoute(nil, "") //nolint:staticcheck // nil contexts are this test's charter
 	//lint:ignore SA1012 nil contexts are this test's charter
-	SetLevel(nil, Level(999))
+	SetLevel(nil, Level(999)) //nolint:staticcheck // nil contexts are this test's charter
 	// Sinks.
 	(*JSONSink)(nil).Write(context.Background(), nil)
 	NewJSONSink(nil).Write(context.Background(), nil)
@@ -1359,7 +1355,7 @@ func TestCrashDeepOperationChain(t *testing.T) {
 	ctx := context.Background()
 	for i := range depth {
 		ops[i] = Start(ctx, rt, OperationStart{Domain: DomainJob, Name: fmt.Sprintf("op%d", i)})
-		ctx = ops[i].Context()
+		ctx = ops[i].Context() //nolint:fatcontext // the chain depth is the subject under test
 		Add(ctx, "depth", i)
 	}
 	for i := depth - 1; i >= 0; i-- {
@@ -1374,7 +1370,11 @@ func TestCrashDeepOperationChain(t *testing.T) {
 	seen := map[string]int{}
 	for _, ev := range evs {
 		name, _ := ev.Lookup("op.name")
-		seen[name.(string)]++
+		nameStr, ok := name.(string)
+		if !ok {
+			t.Fatalf("op.name is not a string: %v", name)
+		}
+		seen[nameStr]++
 	}
 	for i := range depth {
 		if seen[fmt.Sprintf("op%d", i)] != 1 {
@@ -1486,7 +1486,11 @@ func TestCrashSiblingOpsSameBase(t *testing.T) {
 	whos := map[string]bool{}
 	for _, ev := range evs {
 		v, _ := ev.Lookup("who")
-		whos[v.(string)] = true
+		who, ok := v.(string)
+		if !ok {
+			t.Fatalf("who is not a string: %v", v)
+		}
+		whos[who] = true
 	}
 	if !whos["a"] || !whos["b"] {
 		t.Fatalf("siblings crossed: %v", whos)
@@ -1534,7 +1538,7 @@ func TestCrashConcurrentEncoded(t *testing.T) {
 	}
 	wg.Wait()
 	for g := 1; g < n; g++ {
-		if string(lines[g]) != string(lines[0]) {
+		if !bytes.Equal(lines[g], lines[0]) {
 			t.Fatalf("goroutine %d got different bytes", g)
 		}
 	}
