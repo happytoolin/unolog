@@ -1,0 +1,116 @@
+# Strict, purpose-built lint configuration.
+#
+# The rule set targets correctness, security, and performance. Opinionated
+# formatting and complexity linters stay off on purpose: the goal is to catch
+# real defects without burying the code in style churn.
+version: "2"
+
+run:
+  timeout: 5m
+
+issues:
+  # Report every finding: truncation would hide real defects.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+
+  enable:
+    # correctness
+    - errcheck
+    - errorlint
+    - exhaustive
+    - forcetypeassert
+    - govet
+    - ineffassign
+    - makezero
+    - nilerr
+    - nilnesserr
+    - reassign
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - wastedassign
+
+    # modern Go
+    - copyloopvar
+    - exptostd
+    - modernize
+    - perfsprint
+    - usestdlibvars
+
+    # security
+    - bidichk
+    - gosec
+
+    # HTTP and context
+    - bodyclose
+    - canonicalheader
+    - fatcontext
+    - noctx
+
+    # API hygiene
+    - durationcheck
+    - gocheckcompilerdirectives
+    - loggercheck
+
+    # tests
+    - thelper
+
+    # style with a purpose
+    - dupword
+    - gocritic
+    - misspell
+    - nolintlint
+    - prealloc
+    - whitespace
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        # Field, OperationStart, and SampleInput are deliberately passed by
+        # value: value semantics are the API contract and avoid allocation on
+        # the hot path. The rule would force pointer receivers and aliasing.
+        - hugeParam
+    gosec:
+      excludes:
+        # The encoder stores uint64 bits in an int64 slot by design (see
+        # field.go); every conversion is bit-preserving and covered by tests.
+        - G115
+        # Sampling and the property tests use non-crypto randomness on
+        # purpose: deterministic seeds, no security surface.
+        - G404
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    misspell:
+      ignore-rules:
+        # Deliberate alias: the gin adapter would shadow the gin package name.
+        - gogin
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # The encoder is vendored from zerolog and stays byte-faithful for
+      # upstream diffability; the loop shape is deliberate.
+      - path: internal/json/
+        linters:
+          - modernize
+        text: rangeint
