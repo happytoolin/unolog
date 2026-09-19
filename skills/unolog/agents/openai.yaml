@@ -1,0 +1,4 @@
+interface:
+  display_name: "unolog"
+  short_description: "Add one structured event per Go operation"
+  default_prompt: "Use $unolog to integrate canonical structured events into this Go service."
