@@ -41,6 +41,16 @@ go get github.com/happytoolin/unolog/integration/std
 
 Install only the adapter and integration packages you use.
 
+## Agent Skill
+
+Install the repository's `unolog` skill in a supported coding agent:
+
+```bash
+npx skills add happytoolin/unolog --skill unolog
+```
+
+Then ask the agent to use `$unolog` when it adds or reviews request and job logging in a Go service.
+
 ## Quick Start (`net/http` + `slog`)
 
 Compile the runtime once, wrap the handler, annotate with `unolog.Add`:
