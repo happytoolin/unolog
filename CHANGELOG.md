@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [1.2.0](https://github.com/happytoolin/unolog/compare/v1.1.0...v1.2.0) (2026-09-19)
+
+
+### Features
+
+* add CONTRIBUTING.md and SECURITY.md for improved guidelines ([33ef396](https://github.com/happytoolin/unolog/commit/33ef3969418e46c0c4cc0ab5866ca2a10a832c68))
+
+
+### Performance Improvements
+
+* add realistic route benchmarks ([90dbbff](https://github.com/happytoolin/unolog/commit/90dbbff67b5d6e6a8bc45271b98d574696621402))
+
 ## [1.1.0](https://github.com/happytoolin/unolog/compare/v1.0.1...v1.1.0) (2026-09-19)
 
 
