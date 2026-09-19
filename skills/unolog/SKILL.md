@@ -1,60 +1,60 @@
 ---
 name: unolog
-description: Integrate, configure, or review unolog in Go HTTP services and background jobs. Use for canonical one-event-per-operation logging with slog, zap, zerolog, net/http, Gin, Echo, Fiber, or worker jobs.
+description: Integrate, configure, extend, or review unolog in Go HTTP services and background operations. Use for one-event-per-operation logging with slog, zap, zerolog, canonical JSON, net/http, Gin, Echo, Fiber, worker jobs, or custom sinks.
 ---
 
 # unolog
 
-Add unolog without replacing the application's router or logger.
+Add unolog around the application's existing logger and framework. Keep startup, shutdown, and process logs in the host logger. Replace fragmented request or job logs with fields on one final unolog event.
 
-## Choose the existing stack
+## Inspect before editing
 
-Inspect `go.mod` and the application bootstrap before editing. Reuse the logger and framework already in use. Add only the required modules:
+Read `go.mod`, the application bootstrap, router construction, logger construction, and one representative handler or job. Determine:
 
-| Existing stack | Package |
-| --- | --- |
-| `log/slog` | `github.com/happytoolin/unolog/adapter/slog` |
-| zap | `github.com/happytoolin/unolog/adapter/zap` |
-| zerolog | `github.com/happytoolin/unolog/adapter/zerolog` |
-| No logger | `unolog.NewJSONSink(io.Writer)` |
-| `net/http` | `github.com/happytoolin/unolog/integration/std` |
-| Gin | `github.com/happytoolin/unolog/integration/gin` |
-| Echo v4 | `github.com/happytoolin/unolog/integration/echo` |
-| Fiber v2 | `github.com/happytoolin/unolog/integration/fiber` |
-| Fiber v3 | `github.com/happytoolin/unolog/integration/fiberv3` |
-| Background jobs | `github.com/happytoolin/unolog/integration/worker` |
+- the existing logger or output writer;
+- the HTTP framework or operation type;
+- where one shared runtime can be created;
+- which context reaches the business logic;
+- which existing log lines describe the same request or operation.
 
-The root package is `github.com/happytoolin/unolog`. Run `go get` only for the selected root, adapter, and integration packages.
+Do not replace the logger, router, configuration system, or dependency injection pattern.
 
-## Integrate
+## Read only the relevant guides
 
-Create one sink and one immutable `*unolog.Runtime` during application startup. Use `unolog.Compile` when configuration comes from input and return its error. Use `unolog.MustCompile` only for constants.
+Select one sink guide:
 
-Wrap the router with the matching `Middleware`. In handlers, add business context through the request context:
+- For standard-library `log/slog`, read [references/slog.md](references/slog.md).
+- For zap, read [references/zap.md](references/zap.md).
+- For zerolog, read [references/zerolog.md](references/zerolog.md).
+- For dependency-free JSON or a new `unolog.Sink`, read [references/json-and-custom-sinks.md](references/json-and-custom-sinks.md).
+
+Then select the operation guide:
+
+- For `net/http`, Gin, Echo, Fiber v2, or Fiber v3, read [references/http-integrations.md](references/http-integrations.md).
+- For worker jobs, message consumers, CLI commands, or other operations, read [references/operations.md](references/operations.md).
+
+For configuration, sampling, and verification, read [references/configuration-and-testing.md](references/configuration-and-testing.md).
+
+Do not load unrelated logger or framework guides.
+
+## Common integration contract
+
+Install only the root module, one adapter when needed, and one integration package when available. Create one sink and one immutable `*unolog.Runtime` during startup. Share the runtime across requests or jobs.
+
+Use `unolog.Compile` for values from configuration and return the error. Use `unolog.MustCompile` only for literals that should stop startup when invalid.
+
+Add business fields through the operation context:
 
 ```go
-unolog.Add(r.Context(), "user_id", userID, "feature", "checkout")
+unolog.Add(ctx, "user_id", userID, "feature", "checkout")
 ```
 
-Use `unolog.Error(ctx, err)` for a handled error that the framework cannot observe. Use `unolog.SetMessage` only when the final event needs a more specific name. Keep startup, shutdown, and other process logs in the existing logger, but remove per-request log lines that duplicate the final unolog event.
+Use `unolog.Error(ctx, err)` only when an error is handled and will not reach the integration. Use `unolog.SetMessage` for a useful final event name. Use `unolog.SetLevel` only when the operation needs a higher severity than its resolved outcome.
 
-For a background job, use the operation context and defer `End` directly so returned errors and panics are recorded:
+Always pass the enriched context to downstream functions. An original or background context has no attached event, so unolog writes through it are no-ops.
 
-```go
-func run(ctx context.Context, rt *unolog.Runtime, meta worker.JobMeta) (err error) {
-	op := worker.Start(ctx, rt, meta)
-	defer op.End(&err)
+Remove per-request or per-job log lines only when their information is now present in the final event. Keep security, audit, and independently meaningful events separate.
 
-	ctx = op.Context()
-	unolog.Add(ctx, "rows", 42)
-	return doWork(ctx)
-}
-```
+## Finish
 
-Pass the unolog context to downstream functions. Calling `unolog.Add` with the original context is a no-op.
-
-## Configure and verify
-
-Default to `SamplingRate: 1` unless the user gives a sampling policy. Do not sample away failures; unolog preserves errors and server failures automatically.
-
-For a code change, add one focused test with `unolog.NewTestSink()`. Exercise the handler or job, require exactly one captured event, and use `CapturedEvent.Lookup` to check the important fields. Run the tests for every changed Go module.
+Add one focused `unolog.NewTestSink` test for changed behavior. Require one event and check its important fields. Run tests for each changed Go module.
