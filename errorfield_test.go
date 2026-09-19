@@ -74,6 +74,49 @@ func (nilSliceError) Unwrap() error {
 
 var nilSliceUnwrapCalls atomic.Int32
 
+type fuzzGraphError struct {
+	mode     byte
+	children []error
+}
+
+const (
+	graphOrdinary byte = iota
+	graphCanceled
+	graphDeadline
+	graphPanicIs
+	graphPanicUnwrap
+	graphPanicError
+)
+
+func (e *fuzzGraphError) Error() string {
+	if e.mode == graphPanicError {
+		panic("graph Error")
+	}
+	return "graph error"
+}
+
+func (e *fuzzGraphError) Is(target error) bool {
+	switch e.mode {
+	case graphCanceled:
+		return target == context.Canceled
+	case graphDeadline:
+		return target == context.DeadlineExceeded
+	case graphPanicIs:
+		panic("graph Is")
+	default:
+		return false
+	}
+}
+
+func (e *fuzzGraphError) Unwrap() []error {
+	if e.mode == graphPanicUnwrap {
+		panic("graph Unwrap")
+	}
+	return e.children
+}
+
+var errFuzzPlain = errors.New("plain graph error")
+
 func TestErrorFinalizationDefensiveTraversal(t *testing.T) {
 	cycle := &comparableErrorCycle{countedErrorCycle: countedErrorCycle{0}}
 	countedCycle := countedErrorCycle{0}
@@ -164,4 +207,85 @@ func TestTypedNilSliceErrorDoesNotCallError(t *testing.T) {
 	if calls := nilSliceUnwrapCalls.Load(); calls != 0 {
 		t.Fatalf("Unwrap calls = %d, want 0", calls)
 	}
+}
+
+func FuzzErrorGraph(f *testing.F) {
+	f.Add([]byte{graphOrdinary}, []byte{1})
+	f.Add([]byte{graphOrdinary, graphPanicIs}, []byte{1, 2, 2})
+	f.Add([]byte{graphOrdinary, graphCanceled}, []byte{1, 0})
+	f.Add([]byte{graphPanicUnwrap}, []byte{1})
+	f.Add([]byte{graphPanicError}, []byte{2})
+
+	f.Fuzz(func(t *testing.T, modes, edges []byte) {
+		root := buildFuzzErrorGraph(modes, edges)
+		for _, target := range []error{context.Canceled, context.DeadlineExceeded} {
+			got := safeErrorIs(root, target)
+			want := referenceGraphIs(root, target, make(map[*fuzzGraphError]struct{}))
+			if got != want {
+				t.Fatalf("safeErrorIs(%v) = %t, want %t", target, got, want)
+			}
+		}
+		field := structuredErrorField(root)
+		if field["message"] == "" || field["type"] == "" {
+			t.Fatalf("incomplete structured error: %#v", field)
+		}
+	})
+}
+
+func buildFuzzErrorGraph(modes, edges []byte) *fuzzGraphError {
+	n := min(max(1, len(modes)), 32)
+	nodes := make([]*fuzzGraphError, n)
+	for i := range nodes {
+		mode := byte(0)
+		if i < len(modes) {
+			mode = modes[i] % 6
+		}
+		nodes[i] = &fuzzGraphError{mode: mode}
+	}
+	for i, edge := range edges[:min(len(edges), 96)] {
+		parent := nodes[i%n]
+		switch child := int(edge) % (n + 3); child {
+		case n:
+			parent.children = append(parent.children, context.Canceled)
+		case n + 1:
+			parent.children = append(parent.children, context.DeadlineExceeded)
+		case n + 2:
+			parent.children = append(parent.children, errFuzzPlain)
+		default:
+			parent.children = append(parent.children, nodes[child])
+		}
+	}
+	return nodes[0]
+}
+
+func referenceGraphIs(err, target error, seen map[*fuzzGraphError]struct{}) bool {
+	if err == target { //nolint:errorlint // the reference oracle checks exact sentinel identity
+		return true
+	}
+	node, ok := err.(*fuzzGraphError) //nolint:errorlint // the oracle owns this concrete graph type
+	if !ok {
+		return false
+	}
+	if _, exists := seen[node]; exists {
+		return false
+	}
+	seen[node] = struct{}{}
+	switch node.mode {
+	case graphCanceled:
+		if target == context.Canceled { //nolint:errorlint // exact oracle target
+			return true
+		}
+	case graphDeadline:
+		if target == context.DeadlineExceeded { //nolint:errorlint // exact oracle target
+			return true
+		}
+	case graphPanicIs, graphPanicUnwrap:
+		return false
+	}
+	for _, child := range node.children {
+		if referenceGraphIs(child, target, seen) {
+			return true
+		}
+	}
+	return false
 }

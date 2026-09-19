@@ -38,7 +38,7 @@ jobs:
           set +e
           mkdir -p /tmp/fuzz
           echo "core fuzz failures:" > /tmp/fuzz/core-failures
-          for target in FuzzRecordEncodedDedupe FuzzEndLifecycle FuzzDedupeFields FuzzCompileConfig FuzzCrashAdversarialValues FuzzCrashGuardedInterleavings; do
+          for target in FuzzRecordEncodedDedupe FuzzEndLifecycle FuzzDedupeFields FuzzCompileConfig FuzzErrorGraph FuzzCrashAdversarialValues FuzzCrashGuardedSequences; do
             echo "=== $target ==="
             if go test . -run '^$' -fuzz "^$target$" -fuzztime 10m; then
               echo "PASS $target"

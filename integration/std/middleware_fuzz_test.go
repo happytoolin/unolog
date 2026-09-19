@@ -2,8 +2,8 @@ package std
 
 // FuzzMiddlewareRequest (dst-research §6.5): fuzz bytes decode into a
 // request-behavior script (handler actions: Add fields, SetMessage,
-// SetLevel, WriteHeader with a status, body writes, flush, hijack,
-// panic) plus an interface mask selecting which optional
+// SetLevel, WriteHeader with a status, body writes, ReadFrom streams,
+// flush, hijack, panic) plus an interface mask selecting which optional
 // ResponseWriter capabilities the underlying writer exposes (Flusher,
 // Hijacker, Pusher — the interfaces the middleware promotes). Each
 // request runs through the real middleware and the emitted event is
@@ -180,14 +180,16 @@ var errHijackUnavailable = errors.New("hijack unavailable")
 
 // mwAction is one handler behavior.
 type mwAction struct {
-	kind   byte
-	key    string
-	value  any
-	msg    string
-	level  unolog.Level
-	status int
-	body   string
-	panic  any
+	kind     byte
+	key      string
+	value    any
+	msg      string
+	level    unolog.Level
+	status   int
+	body     string
+	panic    any
+	readMode byte
+	readSize int
 }
 
 const (
@@ -199,12 +201,23 @@ const (
 	mwFlush
 	mwPanic
 	mwHijack
+	mwReadFrom
 )
 
 var (
-	mwKeys     = []string{"ua", "ub", "uc"}
-	mwStatuses = []int{0, 200, 201, 204, 301, 400, 404, 418, 500, 503, 100, 101, 102, 103, 99, 1000}
-	mwLevels   = []unolog.Level{unolog.LevelDebug, unolog.LevelInfo, unolog.LevelWarn, unolog.LevelError, unolog.Level(99)}
+	mwKeys      = []string{"ua", "ub", "uc"}
+	mwStatuses  = []int{0, 200, 201, 204, 301, 400, 404, 418, 500, 503, 100, 101, 102, 103, 99, 1000}
+	mwLevels    = []unolog.Level{unolog.LevelDebug, unolog.LevelInfo, unolog.LevelWarn, unolog.LevelError, unolog.Level(99)}
+	mwReadSizes = []int{0, 1, 2, 511, 512, 513, 1024}
+)
+
+const (
+	mwReadOK byte = iota
+	mwReadError
+	mwReadTailError
+	mwReadTailPanic
+	mwReadInvalidNegative
+	mwReadInvalidOversized
 )
 
 // decodeScript parses fuzz bytes into an action list (total: any byte
@@ -216,7 +229,7 @@ func decodeScript(b []byte) (mask byte, actions []mwAction) {
 	mask = b[0]
 	rest := b[1:]
 	for len(rest) > 0 && len(actions) < 24 {
-		cmd := rest[0] % 8
+		cmd := rest[0] % 9
 		rest = rest[1:]
 		next := func() byte {
 			if len(rest) == 0 {
@@ -267,6 +280,9 @@ func decodeScript(b []byte) (mask byte, actions []mwAction) {
 			} else {
 				a.panic = int64(int8(next()))
 			}
+		case mwReadFrom:
+			a.readMode = next() % 6
+			a.readSize = mwReadSizes[int(next())%len(mwReadSizes)]
 		}
 		actions = append(actions, a)
 	}
@@ -285,8 +301,10 @@ type mwModel struct {
 	userFields     map[string]any
 	panicValue     any
 	hasPanic       bool
+	panicAny       bool
 	flushExecuted  bool
 	hijackExecuted bool
+	bodyBytes      int
 }
 
 // apply mirrors the handler + tracker semantics for one action.
@@ -318,6 +336,7 @@ func (m *mwModel) apply(a mwAction, mask byte) {
 		m.committed = a.status
 		m.started = true
 	case mwWrite:
+		m.bodyBytes += len(a.body)
 		if !m.started {
 			m.committed = http.StatusOK
 			m.started = true
@@ -337,6 +356,59 @@ func (m *mwModel) apply(a mwAction, mask byte) {
 	case mwPanic:
 		m.hasPanic = true
 		m.panicValue = a.panic
+	case mwReadFrom:
+		wasStarted := m.started
+		switch a.readMode {
+		case mwReadOK, mwReadTailError, mwReadTailPanic:
+			m.bodyBytes += a.readSize
+			if a.readSize > 0 && !m.started {
+				m.committed = http.StatusOK
+				m.started = true
+			}
+		}
+		if a.readMode == mwReadTailPanic {
+			m.hasPanic = true
+			m.panicValue = fuzzReadPanic
+		} else if a.readMode == mwReadInvalidOversized && wasStarted {
+			// Once committed, the wrapper delegates directly to the
+			// underlying ReaderFrom. io.Copy panics when a broken Reader
+			// reports more bytes than fit in its buffer.
+			m.hasPanic = true
+			m.panicAny = true
+		}
+	}
+}
+
+var errFuzzRead = errors.New("fuzz read failure")
+
+const fuzzReadPanic = "fuzz read panic"
+
+type fuzzReaderFunc func([]byte) (int, error)
+
+func (f fuzzReaderFunc) Read(p []byte) (int, error) { return f(p) }
+
+func fuzzReadSource(a mwAction) io.Reader {
+	payload := bytes.NewReader(bytes.Repeat([]byte{'x'}, a.readSize))
+	switch a.readMode {
+	case mwReadError:
+		return fuzzReaderFunc(func([]byte) (int, error) { return 0, errFuzzRead })
+	case mwReadTailError:
+		return io.MultiReader(payload, fuzzReaderFunc(func([]byte) (int, error) { return 0, errFuzzRead }))
+	case mwReadTailPanic:
+		return io.MultiReader(payload, fuzzReaderFunc(func([]byte) (int, error) { panic(fuzzReadPanic) }))
+	case mwReadInvalidNegative:
+		first := true
+		return fuzzReaderFunc(func([]byte) (int, error) {
+			if first {
+				first = false
+				return -1, nil
+			}
+			return 0, errFuzzRead
+		})
+	case mwReadInvalidOversized:
+		return fuzzReaderFunc(func(p []byte) (int, error) { return len(p) + 1, nil })
+	default:
+		return payload
 	}
 }
 
@@ -386,7 +458,8 @@ func (m *mwModel) finalize() (outcome unolog.Outcome, level unolog.Level, status
 
 func FuzzMiddlewareRequest(f *testing.F) {
 	// Seeds: happy path, panic-before-write, panic-after-write,
-	// flush-then-write, double-write-header, hijack, interface combos.
+	// flush-then-write, double-write-header, hijack, ReadFrom failures,
+	// and interface combinations.
 	seed := func(mask byte, actions ...mwAction) {
 		b := []byte{mask}
 		for _, a := range actions {
@@ -413,6 +486,15 @@ func FuzzMiddlewareRequest(f *testing.F) {
 			case mwWrite:
 				b = append(b, byte(len(a.body)))
 				b = append(b, a.body...)
+			case mwReadFrom:
+				sizeIndex := 0
+				for i, size := range mwReadSizes {
+					if size == a.readSize {
+						sizeIndex = i
+						break
+					}
+				}
+				b = append(b, a.readMode, byte(sizeIndex))
 			}
 		}
 		f.Add(b)
@@ -470,6 +552,12 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		mwAction{kind: mwWriteHeader, status: http.StatusOK},
 	)
 	seed(0x0, mwAction{kind: mwWrite, body: "no-header"})
+	seed(0x0, mwAction{kind: mwReadFrom, readMode: mwReadOK, readSize: 0})
+	seed(0x0, mwAction{kind: mwReadFrom, readMode: mwReadOK, readSize: 512})
+	seed(0x0, mwAction{kind: mwReadFrom, readMode: mwReadTailError, readSize: 513})
+	seed(0x0, mwAction{kind: mwReadFrom, readMode: mwReadTailPanic, readSize: 511})
+	seed(0x0, mwAction{kind: mwReadFrom, readMode: mwReadInvalidNegative})
+	seed(0x0, mwAction{kind: mwReadFrom, readMode: mwReadInvalidOversized})
 	seed(
 		0x7,
 		mwAction{kind: mwSetMsg, msg: "custom"},
@@ -515,6 +603,12 @@ func FuzzMiddlewareRequest(f *testing.F) {
 					}
 				case mwPanic:
 					panic(a.panic)
+				case mwReadFrom:
+					rf, ok := w.(io.ReaderFrom)
+					if !ok {
+						panic("ReaderFrom missing")
+					}
+					_, _ = rf.ReadFrom(fuzzReadSource(a))
 				}
 			}
 		}))
@@ -527,7 +621,7 @@ func FuzzMiddlewareRequest(f *testing.F) {
 
 		// The middleware re-raises panics with the original value.
 		if m.hasPanic {
-			if escaped == nil || fmt.Sprint(escaped) != fmt.Sprint(m.panicValue) {
+			if escaped == nil || !m.panicAny && fmt.Sprint(escaped) != fmt.Sprint(m.panicValue) {
 				t.Fatalf("panic escaped as %#v, want %#v (mask %x)", escaped, m.panicValue, mask)
 			}
 		} else if escaped != nil {
@@ -550,6 +644,9 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		}
 		if m.hijackExecuted != fb.hijacked {
 			t.Fatalf("hijack executed=%v, writer saw %v (mask %x)", m.hijackExecuted, fb.hijacked, mask)
+		}
+		if fb.body.Len() != m.bodyBytes {
+			t.Fatalf("body bytes = %d, want %d (mask %x)", fb.body.Len(), m.bodyBytes, mask)
 		}
 
 		// Exactly one event, checked against the model.
@@ -575,12 +672,12 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		if m.hasPanic {
 			if p, ok := ev.Lookup("panic"); !ok {
 				t.Fatal("missing panic field")
-			} else if pm, ok := p.(map[string]any); !ok || pm["value"] != fmt.Sprint(m.panicValue) {
+			} else if pm, ok := p.(map[string]any); !ok || !m.panicAny && pm["value"] != fmt.Sprint(m.panicValue) {
 				t.Fatalf("panic.value = %v", p)
 			}
 			if e, ok := ev.Lookup("error"); !ok {
 				t.Fatal("missing error field")
-			} else if em, ok := e.(map[string]any); !ok || em["message"] != "panic: "+fmt.Sprint(m.panicValue) {
+			} else if em, ok := e.(map[string]any); !ok || !m.panicAny && em["message"] != "panic: "+fmt.Sprint(m.panicValue) {
 				t.Fatalf("error.message = %v", e)
 			}
 		}
