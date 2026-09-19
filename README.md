@@ -322,6 +322,29 @@ formatted per line, and a sampled-out request never builds a record at all.
 
 ![unolog benchmarks](./assets/benchmarks.svg)
 
+### Realistic route workload
+
+The route benchmark runs the same checkout flow across `net/http`, Gin, Echo,
+Fiber v2, and Fiber v3 with `slog`, Zap, and Zerolog. The workload uses 95%
+successful requests and 5% failed requests.
+
+| 95/5 request mix | unolog vs direct logging |
+|---|---:|
+| Request time | **32% faster** |
+| OS log writes | **1.00 vs 5.95 per request** |
+| Log output | **50% fewer bytes** |
+| Heap bytes | 39% more |
+| Allocations | 32% more |
+
+These values are the geometric mean across all 15 router and logger pairs.
+They use the median of 1,000 samples per case on an Apple M4 with Go 1.27.
+Each sample has a 10 ms measurement window. Each JSON event is encoded and
+written to the OS null device, so the benchmark includes system call cost but
+excludes disk and network delay. Error-only routes were 2.1%
+slower overall because structured error data costs more to build. See the
+[`BenchmarkRealisticRoutes`](./benches/realistic_routes_benchmark_test.go)
+source for the full matrix.
+
 Logging the same 12 fields to a discarded output — each logger alone, and the
 same logger end to end through unolog (Apple M4 / Go 1.27, medians of 25 runs in
 one session):
