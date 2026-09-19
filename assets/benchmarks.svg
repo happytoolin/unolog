@@ -14,35 +14,35 @@
   <rect x="60" y="140" width="1080" height="410" rx="14" fill="#10151C" stroke="#1B222B"/>
   <line x1="100" y1="480" x2="1100" y2="480" stroke="#1B222B"/>
 
-  <!-- slog · JSON: alone 801 + unolog 951 = 1752 -->
-  <path d="M285 343 h110 v129 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z" fill="#4A5568"/>
-  <text x="340" y="415" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="11.5" fill="#E6EBF1">801 ns</text>
-  <path d="M285 188 a8 8 0 0 1 8 -8 h94 a8 8 0 0 1 8 8 v156 h-110 z" fill="#7CFFB2"/>
-  <text x="340" y="265" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" font-weight="700" fill="#0A0C10">+951 ns</text>
-  <text x="340" y="156" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" fill="#F4F6F8">1752 ns</text>
-  <text x="340" y="171" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="10.5" fill="#6F7885">4 allocs</text>
+  <!-- slog · JSON: alone 866 + unolog 745 = 1611 -->
+  <path d="M285 319 h110 v153 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z" fill="#4A5568"/>
+  <text x="340" y="405" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="11.5" fill="#E6EBF1">866 ns</text>
+  <path d="M285 188 a8 8 0 0 1 8 -8 h94 a8 8 0 0 1 8 8 v131 h-110 z" fill="#7CFFB2"/>
+  <text x="340" y="250" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" font-weight="700" fill="#0A0C10">+745 ns</text>
+  <text x="340" y="156" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" fill="#F4F6F8">1611 ns</text>
+  <text x="340" y="171" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="10.5" fill="#6F7885">8 allocs</text>
   <text x="340" y="514" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#C5CDD8">slog · JSON</text>
-  <text x="340" y="538" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#7CFFB2">+119%</text>
+  <text x="340" y="538" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#7CFFB2">+86%</text>
 
-  <!-- zap · JSON: alone 609 + unolog 980 = 1589 -->
-  <path d="M575 376 h110 v96 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z" fill="#4A5568"/>
-  <text x="630" y="432" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="11.5" fill="#E6EBF1">609 ns</text>
-  <path d="M575 216 a8 8 0 0 1 8 -8 h94 a8 8 0 0 1 8 8 v161 h-110 z" fill="#7CFFB2"/>
-  <text x="630" y="296" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" font-weight="700" fill="#0A0C10">+980 ns</text>
-  <text x="630" y="184" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" fill="#F4F6F8">1589 ns</text>
-  <text x="630" y="199" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="10.5" fill="#6F7885">4 allocs</text>
+  <!-- zap · JSON: alone 667 + unolog 748 = 1415 -->
+  <path d="M575 356 h110 v116 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z" fill="#4A5568"/>
+  <text x="630" y="422" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="11.5" fill="#E6EBF1">667 ns</text>
+  <path d="M575 225 a8 8 0 0 1 8 -8 h94 a8 8 0 0 1 8 8 v131 h-110 z" fill="#7CFFB2"/>
+  <text x="630" y="286" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" font-weight="700" fill="#0A0C10">+748 ns</text>
+  <text x="630" y="193" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" fill="#F4F6F8">1415 ns</text>
+  <text x="630" y="208" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="10.5" fill="#6F7885">8 allocs</text>
   <text x="630" y="514" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#C5CDD8">zap · JSON</text>
-  <text x="630" y="538" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#7CFFB2">+161%</text>
+  <text x="630" y="538" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#7CFFB2">+112%</text>
 
-  <!-- zerolog: alone 197 + unolog 519 = 716 -->
-  <path d="M865 446 h110 v26 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z" fill="#4A5568"/>
-  <text x="920" y="467" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="11.5" fill="#E6EBF1">197 ns</text>
-  <path d="M865 365 a8 8 0 0 1 8 -8 h94 a8 8 0 0 1 8 8 v82 h-110 z" fill="#7CFFB2"/>
-  <text x="920" y="406" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" font-weight="700" fill="#0A0C10">+519 ns</text>
-  <text x="920" y="333" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" fill="#F4F6F8">716 ns</text>
-  <text x="920" y="348" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="10.5" fill="#6F7885">3 allocs</text>
+  <!-- zerolog: alone 202 + unolog 546 = 748 -->
+  <path d="M865 442 h110 v30 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z" fill="#4A5568"/>
+  <text x="920" y="465" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="11.5" fill="#E6EBF1">202 ns</text>
+  <path d="M865 349 a8 8 0 0 1 8 -8 h94 a8 8 0 0 1 8 8 v93 h-110 z" fill="#7CFFB2"/>
+  <text x="920" y="392" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" font-weight="700" fill="#0A0C10">+546 ns</text>
+  <text x="920" y="317" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="12" fill="#F4F6F8">748 ns</text>
+  <text x="920" y="332" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="10.5" fill="#6F7885">3 allocs</text>
   <text x="920" y="514" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#C5CDD8">zerolog</text>
-  <text x="920" y="538" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#7CFFB2">+263%</text>
+  <text x="920" y="538" text-anchor="middle" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#7CFFB2">+270%</text>
 
-  <text x="60" y="580" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#5B6472">Means of 25 runs in one session (Sep 2026). Mint is unolog's end-to-end share on top of each logger's own floor — core, bridge, and encoding for one reusable record.</text>
+  <text x="60" y="580" font-family="Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#5B6472">Medians of 25 runs in one session (Sep 2026). Mint is unolog's end-to-end share on top of each logger's own floor — core, bridge, and encoding for one reusable record.</text>
 </svg>
