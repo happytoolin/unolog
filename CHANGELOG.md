@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## [1.1.0](https://github.com/happytoolin/unolog/compare/v1.0.1...v1.1.0) (2026-09-19)
+
+
+### Features
+
+* add unolog agent skill ([c3af501](https://github.com/happytoolin/unolog/commit/c3af501715df7cbe723e317109943f2e78846078))
+* publish unolog agent skill ([e425a11](https://github.com/happytoolin/unolog/commit/e425a117acfbaa02fc8033a86b46ec1c62299131))
+
+
+### Bug Fixes
+
+* **deps:** update dependencies and clear all reachable vulnerabilities ([06e1545](https://github.com/happytoolin/unolog/commit/06e15459d0377e9291ab5f1028c6f327dae51961))
+* **deps:** update dependencies, clear vulnerabilities, and add strict linting ([408bd14](https://github.com/happytoolin/unolog/commit/408bd14a178e65a24558eb7e9973b86715119eb3))
+* harden logging lifecycle and hot paths ([6c9c498](https://github.com/happytoolin/unolog/commit/6c9c4981048809b80e0f8fa153c536086be3fb0e))
+
+
+### Performance Improvements
+
+* harden logging hot paths ([b334fbb](https://github.com/happytoolin/unolog/commit/b334fbb8d67992c7decd58307a99fc5f10a3b45a))
+
 ## [1.0.1](https://github.com/happytoolin/unolog/compare/v1.0.0...v1.0.1) (2026-09-15)
 
 
