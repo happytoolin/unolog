@@ -3,11 +3,11 @@
 package benches_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
 	"io"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -212,15 +212,9 @@ func BenchmarkJSONSinkJsontextComparator(b *testing.B) {
 func TestJSONTextComparatorMatchesCanonicalLine(t *testing.T) {
 	for _, fields := range []int{12, 32} {
 		withRecord(fields, func(rec *unolog.Record) {
-			var got, want map[string]any
-			if err := json.Unmarshal(jsontextEncode(rec), &got); err != nil {
-				t.Fatalf("jsontext with %d fields: %v", fields, err)
-			}
-			if err := json.Unmarshal(rec.Encoded(), &want); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("jsontext with %d fields = %v, want %v", fields, got, want)
+			got, want := jsontextEncode(rec), rec.Encoded()
+			if !bytes.Equal(got, want) {
+				t.Fatalf("jsontext with %d fields = %q, want %q", fields, got, want)
 			}
 		})
 	}
