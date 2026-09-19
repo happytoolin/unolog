@@ -140,6 +140,25 @@ func TestSinkFloat32WireFidelity(t *testing.T) {
 	}
 }
 
+type redactedObject struct {
+	Secret string
+}
+
+func (redactedObject) MarshalZerologObject(event *gozerolog.Event) {
+	event.Str("token", "redacted")
+}
+
+func TestSinkPlainLoggerHonorsObjectMarshaller(t *testing.T) {
+	var buf bytes.Buffer
+	emit(t, &buf, func(ctx context.Context) {
+		unolog.Add(ctx, "secret", redactedObject{Secret: "private"})
+	})
+	got, ok := lastPayload(t, &buf)["secret"].(map[string]any)
+	if !ok || len(got) != 1 || got["token"] != "redacted" {
+		t.Fatalf("secret = %v, want only the redacted token", got)
+	}
+}
+
 func TestSinkWriteNilSafety(t *testing.T) {
 	var nilSink *Sink
 	nilSink.Write(context.Background(), nil)
@@ -150,32 +169,39 @@ func TestSinkWriteNilSafety(t *testing.T) {
 	New(&zl).Write(context.Background(), nil)
 }
 
-// captureSink retains the *unolog.Record handed to Write so a test can
-// drive the bridge with an already-built record (the bridge-only shape).
-type captureSink struct{ recs []*unolog.Record }
+// captureSink holds Write open until test cleanup so the record stays valid.
+type captureSink struct {
+	records chan *unolog.Record
+	release chan struct{}
+}
 
-func (c *captureSink) Write(_ context.Context, rec *unolog.Record) { c.recs = append(c.recs, rec) }
+func (c *captureSink) Write(_ context.Context, rec *unolog.Record) {
+	c.records <- rec
+	<-c.release
+}
 
 func bridgeRecord(t *testing.T, mutate func(ctx context.Context)) *unolog.Record {
 	t.Helper()
-	cap := &captureSink{}
+	cap := &captureSink{records: make(chan *unolog.Record), release: make(chan struct{})}
 	rt := unolog.MustCompile(unolog.Config{Sink: cap, SamplingRate: 1})
-	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "t"})
+	op := unolog.Start(t.Context(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "t"})
 	if mutate != nil {
 		mutate(op.Context())
 	}
-	op.End(nil)
-	if len(cap.recs) != 1 {
-		t.Fatalf("captured %d records", len(cap.recs))
-	}
-	return cap.recs[0]
+	ended := make(chan struct{})
+	t.Cleanup(func() {
+		close(cap.release)
+		<-ended
+	})
+	go func() {
+		defer close(ended)
+		op.End(nil)
+	}()
+	return <-cap.records
 }
 
-// TestSinkFastPathServesCanonicalLine pins the direct-serve fast path:
-// for a plain gozerolog.New(w) logger the bridge writes the record's own
-// pre-encoded canonical line byte-for-byte — one Write call, no typed
-// constructors, no zerolog-assembled envelope.
-func TestSinkFastPathServesCanonicalLine(t *testing.T) {
+// TestSinkDefaultRenderingMatchesCanonicalLine pins the default wire shape.
+func TestSinkDefaultRenderingMatchesCanonicalLine(t *testing.T) {
 	rec := bridgeRecord(t, func(ctx context.Context) {
 		unolog.Add(ctx, "s", "v", "i", 7, "b", true, "d", 1500*time.Millisecond)
 	})
@@ -198,10 +224,19 @@ func TestSinkFastPathServesCanonicalLine(t *testing.T) {
 	}
 }
 
-// TestSinkFastPathRespectsLoggerLevel pins the level gate: the fast
-// path must not write when the logger's threshold filters the record's
-// level (the semantics of event.Enabled() on the typed path).
-func TestSinkFastPathRespectsLoggerLevel(t *testing.T) {
+func TestCanonicalSinkServesCanonicalLine(t *testing.T) {
+	rec := bridgeRecord(t, func(ctx context.Context) {
+		unolog.Add(ctx, "s", "v", "i", 7, "b", true, "d", 1500*time.Millisecond)
+	})
+	var buf bytes.Buffer
+	NewCanonical(&buf).Write(context.Background(), rec)
+	if got, want := buf.Bytes(), rec.Encoded(); !bytes.Equal(got, want) {
+		t.Fatalf("canonical output differs:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// TestSinkRespectsLoggerLevel pins the native zerolog level gate.
+func TestSinkRespectsLoggerLevel(t *testing.T) {
 	info := bridgeRecord(t, nil) // success → info
 	errRec := bridgeRecord(t, func(ctx context.Context) { unolog.SetLevel(ctx, unolog.LevelError) })
 
@@ -226,8 +261,7 @@ func TestSinkFastPathRespectsLoggerLevel(t *testing.T) {
 	}
 }
 
-// TestSinkDisabledLoggerEmitsNothing: a Disabled logger filters every
-// level on the fast path, like event.Enabled() == false.
+// TestSinkDisabledLoggerEmitsNothing verifies the native disabled level.
 func TestSinkDisabledLoggerEmitsNothing(t *testing.T) {
 	rec := bridgeRecord(t, func(ctx context.Context) { unolog.SetLevel(ctx, unolog.LevelError) })
 	var buf bytes.Buffer
@@ -246,9 +280,8 @@ func TestSinkZeroValueLoggerEmitsNothing(t *testing.T) {
 	New(&logger).Write(context.Background(), rec) // no observable output: must not panic
 }
 
-// TestSinkEnrichedLoggerKeepsNativeAugmentation: loggers carrying
-// zerolog context fields, hooks, or samplers take the typed path, so
-// their native augmentation survives the wire.
+// TestSinkEnrichedLoggerKeepsNativeAugmentation verifies that zerolog
+// context fields, hooks, and samplers remain active.
 func TestSinkEnrichedLoggerKeepsNativeAugmentation(t *testing.T) {
 	rec := bridgeRecord(t, func(ctx context.Context) {
 		unolog.Add(ctx, "user_id", "u_1")
@@ -284,17 +317,14 @@ func TestSinkEnrichedLoggerKeepsNativeAugmentation(t *testing.T) {
 		}))
 		New(&logger).Write(context.Background(), rec)
 		if !ran {
-			t.Fatal("hook did not run: enriched logger bypassed the typed path")
+			t.Fatal("hook did not run")
 		}
 	})
 }
 
-// TestSinkCustomizedFieldNamesFallsBackToTypedPath pins the F1 gate:
-// when zerolog's member-name globals are customized, the bridge must
-// not serve the canonical line (whose envelope members are always
-// "level"/"message"/"time") — the typed path emits the customized
-// names through zerolog's own constructors.
-func TestSinkCustomizedFieldNamesFallsBackToTypedPath(t *testing.T) {
+// TestSinkCustomizedFieldNames verifies that the adapter uses zerolog's
+// live public configuration.
+func TestSinkCustomizedFieldNames(t *testing.T) {
 	levelName, timeName, messageName := gozerolog.LevelFieldName, gozerolog.TimestampFieldName, gozerolog.MessageFieldName
 	gozerolog.LevelFieldName, gozerolog.TimestampFieldName, gozerolog.MessageFieldName = "lvl", "ts", "msg"
 	t.Cleanup(func() {
@@ -303,7 +333,7 @@ func TestSinkCustomizedFieldNamesFallsBackToTypedPath(t *testing.T) {
 
 	rec := bridgeRecord(t, func(ctx context.Context) { unolog.Add(ctx, "k", "v") })
 	var buf bytes.Buffer
-	logger := gozerolog.New(&buf) // plain logger: the fast path would serve it
+	logger := gozerolog.New(&buf)
 	New(&logger).Write(context.Background(), rec)
 
 	if buf.Len() == 0 {
@@ -333,13 +363,9 @@ func TestSinkCustomizedFieldNamesFallsBackToTypedPath(t *testing.T) {
 	}
 }
 
-// TestSinkCustomizedRenderingFallsBackToTypedPath pins the extended
-// fast-path gate: every global that shapes the rendered line — time
-// format, duration rendering, level marshalling, timestamp function —
-// routes a plain logger to the typed path, which honors it. Each
-// subtest asserts the customized rendering, not only that the fast path
-// was refused.
-func TestSinkCustomizedRenderingFallsBackToTypedPath(t *testing.T) {
+// TestSinkCustomizedRendering verifies every supported zerolog rendering
+// global through its public typed constructors.
+func TestSinkCustomizedRendering(t *testing.T) {
 	t.Run("time format", func(t *testing.T) {
 		old := gozerolog.TimeFieldFormat
 		gozerolog.TimeFieldFormat = gozerolog.TimeFormatUnix
@@ -347,7 +373,7 @@ func TestSinkCustomizedRenderingFallsBackToTypedPath(t *testing.T) {
 
 		rec := bridgeRecord(t, func(ctx context.Context) { unolog.Add(ctx, "k", "v") })
 		var buf bytes.Buffer
-		logger := gozerolog.New(&buf) // plain logger: the fast path would serve it
+		logger := gozerolog.New(&buf)
 		New(&logger).Write(context.Background(), rec)
 
 		payload := lastPayload(t, &buf)
@@ -407,6 +433,49 @@ func TestSinkCustomizedRenderingFallsBackToTypedPath(t *testing.T) {
 		}
 	})
 
+	t.Run("duration format", func(t *testing.T) {
+		old := gozerolog.DurationFieldFormat
+		gozerolog.DurationFieldFormat = gozerolog.DurationFormatString
+		t.Cleanup(func() { gozerolog.DurationFieldFormat = old })
+
+		var buf bytes.Buffer
+		emit(t, &buf, func(ctx context.Context) { unolog.Add(ctx, "d", 2500*time.Millisecond) })
+		if got := lastPayload(t, &buf)["d"]; got != "2.5s" {
+			t.Fatalf("d = %v, want the duration string 2.5s", got)
+		}
+	})
+
+	t.Run("float precision", func(t *testing.T) {
+		old := gozerolog.FloatingPointPrecision
+		gozerolog.FloatingPointPrecision = 2
+		t.Cleanup(func() { gozerolog.FloatingPointPrecision = old })
+
+		var buf bytes.Buffer
+		emit(t, &buf, func(ctx context.Context) {
+			unolog.Add(ctx, "f32", float32(1.2345), "f64", 1.2345, "d", 1234567*time.Nanosecond)
+		})
+		payload := lastPayload(t, &buf)
+		for _, key := range []string{"f32", "f64", "d"} {
+			if got := payload[key]; got != 1.23 {
+				t.Errorf("%s = %v, want 1.23", key, got)
+			}
+		}
+	})
+
+	t.Run("interface marshaller", func(t *testing.T) {
+		old := gozerolog.InterfaceMarshalFunc
+		gozerolog.InterfaceMarshalFunc = func(any) ([]byte, error) { return []byte(`"redacted"`), nil }
+		t.Cleanup(func() { gozerolog.InterfaceMarshalFunc = old })
+
+		var buf bytes.Buffer
+		emit(t, &buf, func(ctx context.Context) {
+			unolog.Add(ctx, "secret", map[string]string{"token": "private"})
+		})
+		if got := lastPayload(t, &buf)["secret"]; got != "redacted" {
+			t.Fatalf("secret = %v, want redacted", got)
+		}
+	})
+
 	t.Run("timestamp function", func(t *testing.T) {
 		old := gozerolog.TimestampFunc
 		gozerolog.TimestampFunc = func() time.Time { return time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC) }
@@ -415,7 +484,7 @@ func TestSinkCustomizedRenderingFallsBackToTypedPath(t *testing.T) {
 		rec := bridgeRecord(t, func(ctx context.Context) { unolog.Add(ctx, "k", "v") })
 		var buf bytes.Buffer
 		logger := gozerolog.New(&buf).With().Timestamp().Logger()
-		New(&logger).Write(context.Background(), rec)
+		NewWithLoggerTimestamp(&logger).Write(context.Background(), rec)
 
 		payload := lastPayload(t, &buf)
 		if payload["time"] != "1999-01-01T00:00:00Z" {
@@ -424,15 +493,13 @@ func TestSinkCustomizedRenderingFallsBackToTypedPath(t *testing.T) {
 	})
 }
 
-// TestSinkTypedPathStampsRecordCompletionTime pins the F6 symmetry:
-// the enriched-logger typed path stamps the record's own completion
-// time (rec.Time()) — the instant the canonical line carries — rather
-// than a fresh write-time read.
-func TestSinkTypedPathStampsRecordCompletionTime(t *testing.T) {
+// TestSinkStampsRecordCompletionTime verifies that New uses the record's
+// completion time rather than a fresh write-time read.
+func TestSinkStampsRecordCompletionTime(t *testing.T) {
 	rec := bridgeRecord(t, func(ctx context.Context) { unolog.Add(ctx, "k", "v") })
 
 	var buf bytes.Buffer
-	logger := gozerolog.New(&buf).With().Str("svc", "payments").Logger() // enriched: typed path
+	logger := gozerolog.New(&buf).With().Str("svc", "payments").Logger()
 	New(&logger).Write(context.Background(), rec)
 
 	payload := lastPayload(t, &buf)
@@ -447,14 +514,13 @@ func TestSinkTypedPathStampsRecordCompletionTime(t *testing.T) {
 	// Both the canonical line and zerolog's TimeFieldFormat render
 	// RFC3339 seconds precision, so compare at that granularity.
 	if want := rec.Time().Truncate(time.Second); !got.Equal(want) {
-		t.Fatalf("typed path stamped %v, want the record's completion time %v", got, want)
+		t.Fatalf("adapter stamped %v, want the record's completion time %v", got, want)
 	}
 }
 
-// TestSinkTypedPathAliasesEnvelopeKeys pins Encoded() parity on the
-// typed path: user keys that collide with the envelope are renamed to
+// TestSinkAliasesEnvelopeKeys pins Encoded() parity: user keys that collide with the envelope are renamed to
 // fields.* so encoding/json last-wins cannot drop them.
-func TestSinkTypedPathAliasesEnvelopeKeys(t *testing.T) {
+func TestSinkAliasesEnvelopeKeys(t *testing.T) {
 	rec := bridgeRecord(t, func(ctx context.Context) {
 		unolog.Add(ctx, "time", "user-time", "message", "user-msg", "level", "user-level")
 	})
@@ -528,33 +594,27 @@ type errBoom struct{}
 
 func (errBoom) Error() string { return "boom" }
 
-// TestSinkTimestampHookDoesNotDuplicateTime pins the .With().Timestamp()
-// logger shape — the README's recommended zerolog setup. The hook would
-// stamp a second "time" member onto the typed path (zerolog's own NOTE:
-// "It won't dedupe the time key"), and did before detection was added.
+// TestSinkTimestampHookDoesNotDuplicateTime pins the explicit constructor
+// for a logger configured with .With().Timestamp().
 func TestSinkTimestampHookDoesNotDuplicateTime(t *testing.T) {
 	rec := bridgeRecord(t, func(ctx context.Context) {
 		unolog.Add(ctx, "k", "v")
 	})
 
-	t.Run("fast path serves the canonical line", func(t *testing.T) {
+	t.Run("plain", func(t *testing.T) {
 		var buf bytes.Buffer
 		logger := gozerolog.New(&buf).With().Timestamp().Logger()
-		New(&logger).Write(context.Background(), rec)
+		NewWithLoggerTimestamp(&logger).Write(context.Background(), rec)
 		line := bytes.TrimRight(buf.Bytes(), "\n")
 		if n := bytes.Count(line, []byte(`"time":`)); n != 1 {
 			t.Fatalf("time members = %d, want 1: %s", n, line)
 		}
-		if want := bytes.TrimRight(rec.Encoded(), "\n"); !bytes.Equal(line, want) {
-			t.Fatalf("line = %s, want the canonical Encoded() bytes", line)
-		}
 	})
 
-	t.Run("typed path lets the hook stamp once", func(t *testing.T) {
+	t.Run("context fields", func(t *testing.T) {
 		var buf bytes.Buffer
-		// Context fields force the typed path while keeping the hook.
 		logger := gozerolog.New(&buf).With().Timestamp().Str("svc", "payments").Logger()
-		New(&logger).Write(context.Background(), rec)
+		NewWithLoggerTimestamp(&logger).Write(context.Background(), rec)
 		line := bytes.TrimRight(buf.Bytes(), "\n")
 		if n := bytes.Count(line, []byte(`"time":`)); n != 1 {
 			t.Fatalf("time members = %d, want 1: %s", n, line)
@@ -569,20 +629,9 @@ func TestSinkTimestampHookDoesNotDuplicateTime(t *testing.T) {
 // Bridge robustness tests: nil/garbage abuse and typed-nil error
 // containment.
 
-type recSink struct{ rec *unolog.Record }
-
-func (s *recSink) Write(_ context.Context, rec *unolog.Record) { s.rec = rec }
-
 func crashRecord(t *testing.T) *unolog.Record {
 	t.Helper()
-	s := &recSink{}
-	rt := unolog.MustCompile(unolog.Config{Sink: s, SamplingRate: 1})
-	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "j"})
-	unolog.Add(op.Context(), "k", "v")
-	if !op.End(nil) || s.rec == nil {
-		t.Fatal("no record captured")
-	}
-	return s.rec
+	return bridgeRecord(t, func(ctx context.Context) { unolog.Add(ctx, "k", "v") })
 }
 
 func TestCrashNilAbuse(t *testing.T) {
@@ -596,24 +645,19 @@ func TestCrashNilAbuse(t *testing.T) {
 	New(&disabled).Write(context.Background(), rec)
 
 	ts := gozerolog.New(nil).With().Timestamp().Str("svc", "x").Logger()
-	New(&ts).Write(context.Background(), rec)
+	NewWithLoggerTimestamp(&ts).Write(context.Background(), rec)
 
 	sampled := ts.Sample(&gozerolog.BurstSampler{Burst: 1, Period: 1e9})
-	New(&sampled).Write(context.Background(), rec)
+	NewWithLoggerTimestamp(&sampled).Write(context.Background(), rec)
 }
 
 func TestCrashTypedNilErrorField(t *testing.T) {
 	var pe *os.PathError
 	var buf bytes.Buffer
-	s := &recSink{}
-	rt := unolog.MustCompile(unolog.Config{Sink: s, SamplingRate: 1})
-	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "j"})
-	unolog.Add(op.Context(), "e", pe)
-	unolog.Error(op.Context(), pe)
-	_ = op.End(nil)
-	rec := s.rec
-	zl := gozerolog.New(&buf)
-	New(&zl).Write(context.Background(), rec)
+	emit(t, &buf, func(ctx context.Context) {
+		unolog.Add(ctx, "e", pe)
+		unolog.Error(ctx, pe)
+	})
 	if !strings.Contains(buf.String(), `"<nil>"`) {
 		t.Fatalf("typed-nil error not rendered as <nil>: %s", buf.String())
 	}

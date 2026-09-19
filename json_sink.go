@@ -32,8 +32,8 @@ func (s *JSONSink) Write(_ context.Context, rec *Record) {
 	}
 	b := rec.Encoded()
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, _ = s.w.Write(b)
-	s.mu.Unlock()
 }
 
 var _ Sink = (*JSONSink)(nil)

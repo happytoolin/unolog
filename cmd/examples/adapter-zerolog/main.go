@@ -14,7 +14,7 @@ import (
 
 func main() {
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
-	sink := uzerolog.New(&logger)
+	sink := uzerolog.NewWithLoggerTimestamp(&logger)
 	mw := std.Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1}))
 
 	mux := http.NewServeMux()

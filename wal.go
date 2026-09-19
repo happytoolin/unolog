@@ -84,6 +84,7 @@ func (e *event) reset() {
 	defer e.mu.Unlock()
 	s := e.state.Add(walGenOne) // new generation; any straggler now mismatches
 	e.state.Store(s&^walStateMask | uint64(walActive))
+	clear(e.fields) // Do not retain a previous request's values beyond the next reset.
 	e.fields = e.fields[:0]
 	e.msg = ""
 	e.hasErr = false
@@ -122,15 +123,26 @@ func (e *event) append(gen uint64, f Field) {
 // (k, v, k, v, ...). Empty keys and non-string keys are skipped
 // uniformly; an odd trailing value is dropped.
 func (e *event) addKV(ref *walRef, key string, value any, kv ...any) {
+	s := e.state.Load()
+	if s>>walStateBits != ref.gen || walState(s&walStateMask) == walSealed {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cur := e.state.Load(); cur>>walStateBits != ref.gen || walState(cur&walStateMask) != walActive {
+		return
+	}
+	// fieldOf only inspects types: one lock covers the whole batch without
+	// calling user code while locked.
 	if key != "" {
-		e.append(ref.gen, fieldOf(key, value))
+		e.fields = append(e.fields, fieldOf(key, value))
 	}
 	for i := 0; i+1 < len(kv); i += 2 {
 		k, ok := kv[i].(string)
 		if !ok || k == "" {
 			continue
 		}
-		e.append(ref.gen, fieldOf(k, kv[i+1]))
+		e.fields = append(e.fields, fieldOf(k, kv[i+1]))
 	}
 }
 
@@ -151,15 +163,15 @@ func (e *event) setError(ref *walRef, err error) {
 	if err == nil {
 		return
 	}
+	s := e.state.Load()
+	if s>>walStateBits != ref.gen || walState(s&walStateMask) == walSealed {
+		return
+	}
 	// Build the structured field before the lock: Error()/Unwrap()
 	// implementations are user code and must not run under the event
 	// mutex (a slow or reentrant error would stall or deadlock other
 	// writers and the watchdog).
 	field := Field{key: KeyError, kind: KindAny, val: structuredErrorField(err)}
-	s := e.state.Load()
-	if s>>walStateBits != ref.gen || walState(s&walStateMask) == walSealed {
-		return
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if cur := e.state.Load(); cur>>walStateBits == ref.gen && walState(cur&walStateMask) == walActive {

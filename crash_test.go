@@ -1912,10 +1912,9 @@ func truncate(b []byte, n int) string {
 	return string(b[:n]) + "..."
 }
 
-// FuzzCrashGuardedInterleavings: random interleavings of guarded writes,
-// setters, and a single End on a guarded event. Oracle: exactly one
-// event, valid line, no lost completion fields.
-func FuzzCrashGuardedInterleavings(f *testing.F) {
+// FuzzCrashGuardedSequences generates guarded writes, setters, and one End.
+// Concurrency schedules are covered by the race and synctest cases above.
+func FuzzCrashGuardedSequences(f *testing.F) {
 	f.Add(0, 0, 0, 0)
 	f.Add(1, 10, 3, 7)
 	f.Add(2, 0, 0, 1)

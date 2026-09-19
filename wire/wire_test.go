@@ -68,6 +68,20 @@ func TestLastIndicesNarrowPathMatchesWidePath(t *testing.T) {
 	}
 }
 
+func TestAppendLastIndicesPreservesPrefix(t *testing.T) {
+	storage := [NarrowLimit + 1]int{99}
+	got := AppendLastIndices(storage[:1], []item{{"a"}, {"b"}, {"a"}}, func(it item) string { return it.k })
+	want := []int{99, 1, 2}
+	if len(got) != len(want) {
+		t.Fatalf("indices = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("indices = %v, want %v", got, want)
+		}
+	}
+}
+
 type typedNilErr struct{ msg string }
 
 // Error would deref the nil receiver if called — but fmt never calls
@@ -78,9 +92,13 @@ type panickingErr struct{}
 
 func (panickingErr) Error() string { panic("Error() boom") }
 
+type nilSliceErr []int
+
+func (nilSliceErr) Error() string { panic("Error() boom") }
+
 // TestErrorMessageFencesHostileErrors pins the fence: typed-nil errors
-// render via fmt ("<nil>"), panicking Error() implementations are
-// contained to a fmt fallback, ordinary errors pass through.
+// render as "<nil>", panicking Error() implementations are contained
+// to a fmt fallback, ordinary errors pass through.
 func TestErrorMessageFencesHostileErrors(t *testing.T) {
 	if got := ErrorMessage(nil); got != "" {
 		t.Fatalf("nil message = %q, want empty", got)
@@ -88,6 +106,10 @@ func TestErrorMessageFencesHostileErrors(t *testing.T) {
 	var nilErr *typedNilErr
 	if got := ErrorMessage(nilErr); got != "<nil>" {
 		t.Fatalf("typed-nil message = %q, want %q", got, "<nil>")
+	}
+	var nilSlice nilSliceErr
+	if got := ErrorMessage(nilSlice); got != "<nil>" {
+		t.Fatalf("typed-nil slice message = %q, want %q", got, "<nil>")
 	}
 	if got := ErrorMessage(panickingErr{}); got == "" {
 		t.Fatal("panicking Error() yielded an empty message, want a fmt fallback rendering")

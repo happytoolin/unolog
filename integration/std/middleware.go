@@ -4,6 +4,7 @@
 package std
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -74,11 +75,13 @@ type responseWriter struct {
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
-	if !rw.wroteHeader {
+	rw.ResponseWriter.WriteHeader(code)
+	// Informational responses leave the final status open, except a protocol switch.
+	informational := code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
+	if !rw.wroteHeader && !informational {
 		rw.statusCode = code
 		rw.wroteHeader = true
 	}
-	rw.ResponseWriter.WriteHeader(code)
 }
 
 func (rw *responseWriter) Write(p []byte) (int, error) {
@@ -90,15 +93,67 @@ func (rw *responseWriter) Write(p []byte) (int, error) {
 }
 
 func (rw *responseWriter) ReadFrom(src io.Reader) (int64, error) {
-	if !rw.wroteHeader {
-		rw.statusCode = http.StatusOK
-		rw.wroteHeader = true
-	}
 	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
-		return rf.ReadFrom(src)
+		var n int64
+		if !rw.wroteHeader {
+			// Match net/http's 512-byte content sniff before its zero-copy path.
+			// An empty or failed read commits nothing; a later panic keeps
+			// the status recorded by the writes that already succeeded.
+			var err error
+			n, err = rw.writeSniff(src)
+			if err != nil || n < 512 {
+				return n, err
+			}
+		}
+		remaining, err := rf.ReadFrom(src)
+		return n + remaining, err
 	}
 	return io.Copy(onlyWriter{rw}, src)
 }
+
+func (rw *responseWriter) writeSniff(src io.Reader) (int64, error) {
+	buf := sniffBufferPool.Get().(*[512]byte) //nolint:forcetypeassert // the pool stores exactly *[512]byte
+	defer sniffBufferPool.Put(buf)
+	var written int64
+	for written < int64(len(buf)) {
+		chunk := buf[:int64(len(buf))-written]
+		n, readErr := src.Read(chunk)
+		if n < 0 || n > len(chunk) {
+			if readErr != nil {
+				return written, readErr
+			}
+			return written, errInvalidRead
+		}
+		if n > 0 {
+			nw, writeErr := rw.Write(chunk[:n])
+			if nw < 0 || nw > n {
+				if writeErr != nil {
+					return written, writeErr
+				}
+				return written, errInvalidWrite
+			}
+			written += int64(nw)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if nw != n {
+				return written, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				readErr = nil
+			}
+			return written, readErr
+		}
+	}
+	return written, nil
+}
+
+var (
+	errInvalidRead  = errors.New("invalid Read result")
+	errInvalidWrite = errors.New("invalid Write result")
+)
 
 type onlyWriter struct{ rw *responseWriter }
 
@@ -116,6 +171,10 @@ func (rw *responseWriter) CloseNotify() <-chan bool {
 
 var trackerPool = sync.Pool{
 	New: func() any { return &responseWriter{} },
+}
+
+var sniffBufferPool = sync.Pool{
+	New: func() any { return new([512]byte) },
 }
 
 func getTracker(w http.ResponseWriter) *responseWriter {

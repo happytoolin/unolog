@@ -137,6 +137,10 @@ func deepCopyValue(v any, seen *visitSet) any {
 func deepCopyReflect(src, dst reflect.Value, seen map[visitKey]reflect.Value) {
 	switch k := src.Kind(); k {
 	case reflect.Map:
+		if src.IsNil() {
+			dst.SetZero()
+			return
+		}
 		key := visitKey{typ: src.Type(), ptr: src.Pointer()}
 		if prior, ok := seen[key]; ok {
 			dst.Set(prior)
@@ -161,7 +165,7 @@ func deepCopyReflect(src, dst reflect.Value, seen map[visitKey]reflect.Value) {
 			dst.Set(reflect.MakeSlice(src.Type(), 0, src.Cap()))
 			return
 		}
-		key := visitKey{typ: src.Type(), ptr: src.Pointer()}
+		key := visitKey{typ: src.Type(), ptr: src.Pointer(), len: src.Len()}
 		if prior, ok := seen[key]; ok {
 			dst.Set(prior)
 			return
@@ -207,11 +211,15 @@ type visitSet struct {
 type visitKey struct {
 	typ reflect.Type
 	ptr uintptr
+	len int // slices sharing a start address can expose different elements
 }
 
 func newVisitSet() *visitSet { return &visitSet{seen: map[visitKey]any{}} }
 
 func deepCopyMap(m map[string]any, seen *visitSet) map[string]any {
+	if m == nil {
+		return nil
+	}
 	key := visitKey{typ: reflect.TypeOf(m), ptr: reflect.ValueOf(m).Pointer()}
 	if prior, ok := seen.seen[key]; ok {
 		return prior.(map[string]any) //nolint:forcetypeassert // the visit set stores exactly this type
@@ -225,7 +233,10 @@ func deepCopyMap(m map[string]any, seen *visitSet) map[string]any {
 }
 
 func deepCopySlice(s []any, seen *visitSet) []any {
-	key := visitKey{typ: reflect.TypeOf(s), ptr: reflect.ValueOf(s).Pointer()}
+	if s == nil {
+		return nil
+	}
+	key := visitKey{typ: reflect.TypeOf(s), ptr: reflect.ValueOf(s).Pointer(), len: len(s)}
 	if prior, ok := seen.seen[key]; ok {
 		return prior.([]any) //nolint:forcetypeassert // the visit set stores exactly this type
 	}

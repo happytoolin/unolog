@@ -196,6 +196,42 @@ func TestWALStartedAt(t *testing.T) {
 	}
 }
 
+func TestWALResetReleasesFieldReferences(t *testing.T) {
+	ev := &event{fields: make([]Field, 16)}
+	for i := range ev.fields {
+		ev.fields[i] = fieldOf("payload", make([]byte, 1024))
+	}
+	previous := ev.fields
+	ev.reset()
+	ev.append(genOf(ev), fieldStr("short", "next request"))
+	for i, f := range previous[1:] {
+		if f.kind != KindInvalid || f.key != "" || f.str != "" || f.val != nil {
+			t.Fatalf("unused slot %d retained the previous request", i+1)
+		}
+	}
+}
+
+type walCountedError struct{ calls int }
+
+func (e *walCountedError) Error() string {
+	e.calls++
+	return "failure"
+}
+
+func TestWALStaleErrorSkipsUserCode(t *testing.T) {
+	ev := &event{}
+	ev.reset()
+	ref := &walRef{ev: ev, gen: genOf(ev)}
+	err := &walCountedError{}
+	ev.seal()
+	ev.setError(ref, err)
+	ev.reset()
+	ev.setError(ref, err)
+	if err.calls != 0 {
+		t.Fatalf("stale Error called user code %d times", err.calls)
+	}
+}
+
 // TestWALStaleSettersAfterReset pins the generation checks in the
 // setter entry points that do not route through append's gen check:
 // setMessage, setLevel, and setError's hasErr latch all trust their
@@ -1516,13 +1552,7 @@ func stagedEnd(op *Operation, fireAt matrixPhase, fire func(ctx context.Context)
 	if fireAt == phasePrePostSeal {
 		fire(op.Context())
 	}
-	op.annotatePostSeal(&commitInput{
-		outcome:  outcome,
-		code:     code,
-		duration: duration,
-		now:      now,
-		scan:     scan,
-	})
+	// Final annotations are now part of commit, after built-in sampling.
 	if fireAt == phasePreCommit {
 		fire(op.Context())
 	}

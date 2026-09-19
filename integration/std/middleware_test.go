@@ -148,6 +148,101 @@ func TestMiddlewareWriteHeaderTwiceLogsFirstCommittedStatus(t *testing.T) {
 	}
 }
 
+func TestMiddlewareInformationalResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rate   float64
+		status int
+		finish func(http.ResponseWriter)
+	}{
+		{
+			name: "failure survives zero sampling", status: http.StatusServiceUnavailable,
+			finish: func(w http.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) },
+		},
+		{
+			name: "implicit write", rate: 1, status: http.StatusOK,
+			finish: func(w http.ResponseWriter) { _, _ = w.Write([]byte("ok")) },
+		},
+		{
+			name: "implicit flush", rate: 1, status: http.StatusOK,
+			finish: func(w http.ResponseWriter) { _ = http.NewResponseController(w).Flush() },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := unolog.NewTestSink()
+			handler := Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: tc.rate}))(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusContinue)
+					w.WriteHeader(http.StatusProcessing)
+					w.WriteHeader(http.StatusEarlyHints)
+					tc.finish(w)
+				}),
+			)
+			// ResponseRecorder treats 1xx as final, so exercise a real HTTP writer.
+			done := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done)
+				handler.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			_, _ = io.Copy(io.Discard, res.Body)
+			<-done
+			if res.StatusCode != tc.status {
+				t.Fatalf("response status = %d, want %d", res.StatusCode, tc.status)
+			}
+			events := sink.Events()
+			if len(events) != 1 {
+				t.Fatalf("events = %d, want 1", len(events))
+			}
+			if got := statusField(events[0]); got != int64(tc.status) {
+				t.Fatalf("logged status = %d, want %d", got, tc.status)
+			}
+		})
+	}
+}
+
+func TestMiddlewareSwitchingProtocolsCommits(t *testing.T) {
+	sink := unolog.NewTestSink()
+	handler := Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1}))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusSwitchingProtocols)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}),
+	)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if events := sink.Events(); len(events) != 1 || statusField(events[0]) != int64(rr.Code) {
+		t.Fatalf("events = %v, response status = %d", events, rr.Code)
+	}
+}
+
+func TestMiddlewareInvalidStatusDoesNotCommit(t *testing.T) {
+	sink := unolog.NewTestSink()
+	handler := Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1}))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(99) }),
+	)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("invalid status did not panic")
+			}
+		}()
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	}()
+	if events := sink.Events(); len(events) != 1 || statusField(events[0]) != http.StatusInternalServerError {
+		t.Fatalf("events = %v, want a panic event with status 500", events)
+	}
+}
+
 func TestMiddlewarePanicAfterCommittedStatusKeepsCommittedStatus(t *testing.T) {
 	backend := unolog.NewTestSink()
 	mw := Middleware(unolog.MustCompile(unolog.Config{
@@ -333,6 +428,166 @@ func TestMiddlewareReadFromSetsStatusCode(t *testing.T) {
 		t.Fatalf("expected status 200, got %v", statusField(events[0]))
 	}
 }
+
+func TestMiddlewareReadFromWithoutBytesDoesNotCommit(t *testing.T) {
+	for _, delegated := range []bool{false, true} {
+		for _, readErr := range []error{nil, io.ErrUnexpectedEOF} {
+			t.Run(fmt.Sprintf("delegated=%t/error=%v", delegated, readErr), func(t *testing.T) {
+				sink := unolog.NewTestSink()
+				handler := Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 0}))(
+					http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						src := readerFunc(func([]byte) (int, error) {
+							if readErr != nil {
+								return 0, readErr
+							}
+							return 0, io.EOF
+						})
+						rf, ok := w.(io.ReaderFrom)
+						if !ok {
+							t.Fatal("response writer has no ReaderFrom")
+						}
+						n, err := rf.ReadFrom(src)
+						if n != 0 || !errors.Is(err, readErr) {
+							t.Fatalf("ReadFrom = %d, %v; want 0, %v", n, err, readErr)
+						}
+						w.WriteHeader(http.StatusServiceUnavailable)
+					}),
+				)
+				rr := httptest.NewRecorder()
+				var writer http.ResponseWriter = rr
+				if delegated {
+					writer = &readerFromRecorder{ResponseRecorder: rr}
+				}
+				handler.ServeHTTP(writer, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+				if rr.Code != http.StatusServiceUnavailable {
+					t.Fatalf("response status = %d, want 503", rr.Code)
+				}
+				if events := sink.Events(); len(events) != 1 || statusField(events[0]) != int64(rr.Code) {
+					t.Fatalf("events = %v, want one failure event with status 503", events)
+				}
+			})
+		}
+	}
+}
+
+func TestMiddlewareReadFromPanicKeepsCommittedStatus(t *testing.T) {
+	for _, size := range []int{0, 1, 513} {
+		t.Run(fmt.Sprintf("bytes=%d", size), func(t *testing.T) {
+			sink := unolog.NewTestSink()
+			handler := Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1}))(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					src := io.MultiReader(strings.NewReader(strings.Repeat("x", size)), readerFunc(func([]byte) (int, error) {
+						panic("read failed")
+					}))
+					rf, ok := w.(io.ReaderFrom)
+					if !ok {
+						t.Fatal("response writer has no ReaderFrom")
+					}
+					_, _ = rf.ReadFrom(src)
+				}),
+			)
+			rr := &readerFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+			func() {
+				defer func() {
+					if got := recover(); got != "read failed" {
+						t.Fatalf("panic = %v, want read failed", got)
+					}
+				}()
+				handler.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+			}()
+			wantStatus := http.StatusOK
+			if size == 0 {
+				wantStatus = http.StatusInternalServerError
+			}
+			if rr.Body.Len() != size {
+				t.Fatalf("body length = %d, want %d", rr.Body.Len(), size)
+			}
+			if events := sink.Events(); len(events) != 1 || statusField(events[0]) != int64(wantStatus) {
+				t.Fatalf("events = %v, want one panic event with status %d", events, wantStatus)
+			}
+		})
+	}
+}
+
+func TestResponseWriterReadFromRejectsInvalidCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read readerFunc
+	}{
+		{name: "negative read", read: func([]byte) (int, error) { return -1, nil }},
+		{name: "oversized read", read: func(p []byte) (int, error) { return len(p) + 1, nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := &readerFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+			rw := getTracker(base)
+			defer rw.release()
+			if n, err := rw.ReadFrom(tc.read); n != 0 || err == nil {
+				t.Fatalf("ReadFrom = %d, %v; want 0 and an error", n, err)
+			}
+		})
+	}
+
+	for _, result := range []int{-1, 2} {
+		t.Run(fmt.Sprintf("write=%d", result), func(t *testing.T) {
+			base := &invalidWriteRecorder{header: make(http.Header), result: result}
+			rw := getTracker(base)
+			defer rw.release()
+			if n, err := rw.ReadFrom(strings.NewReader("x")); n != 0 || err == nil {
+				t.Fatalf("ReadFrom = %d, %v; want 0 and an error", n, err)
+			}
+		})
+	}
+}
+
+func TestResponseWriterReadFromPreservesFastPath(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("committed=%t", committed), func(t *testing.T) {
+			base := &readerFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+			rw := getTracker(base)
+			defer rw.release()
+			if committed {
+				rw.WriteHeader(http.StatusCreated)
+			}
+			body := "<!doctype html>" + strings.Repeat("x", 1024)
+			src := strings.NewReader(body)
+			if n, err := rw.ReadFrom(src); n != int64(len(body)) || err != nil {
+				t.Fatalf("ReadFrom = %d, %v", n, err)
+			}
+			if base.source != src || base.calls != 1 || base.Body.String() != body {
+				t.Fatalf("ReaderFrom calls = %d, source = %T, body length = %d", base.calls, base.source, base.Body.Len())
+			}
+			if !committed && base.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+				t.Fatalf("content type = %q", base.Header().Get("Content-Type"))
+			}
+		})
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+type readerFromRecorder struct {
+	*httptest.ResponseRecorder
+	calls  int
+	source io.Reader
+}
+
+func (w *readerFromRecorder) ReadFrom(src io.Reader) (int64, error) {
+	w.calls++
+	w.source = src
+	return io.Copy(w.ResponseRecorder, src)
+}
+
+type invalidWriteRecorder struct {
+	header http.Header
+	result int
+}
+
+func (w *invalidWriteRecorder) Header() http.Header             { return w.header }
+func (*invalidWriteRecorder) WriteHeader(int)                   {}
+func (w *invalidWriteRecorder) Write([]byte) (int, error)       { return w.result, nil }
+func (*invalidWriteRecorder) ReadFrom(io.Reader) (int64, error) { panic("unexpected delegation") }
 
 func TestMiddlewareNilSinkStillRunsHandler(t *testing.T) {
 	mw := Middleware(unolog.MustCompile(unolog.Config{}))

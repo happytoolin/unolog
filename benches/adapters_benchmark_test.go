@@ -22,21 +22,24 @@ func adapterEvent(ctx context.Context, rt *unolog.Runtime) {
 	op.End(nil)
 }
 
-// bridgeRecords pre-builds records via a capturing sink (the bridge-only
-// gate shape: sink.Write on a ready record, mirroring the v0 benches).
-type bridgeCapture struct{ recs []*unolog.Record }
+// withRecord runs use while the sink owns a valid record. Retaining a
+// record after Write returns would let pool reuse corrupt benchmark inputs.
+type recordSinkFunc func(*unolog.Record)
 
-func (c *bridgeCapture) Write(_ context.Context, rec *unolog.Record) { c.recs = append(c.recs, rec) }
+func (f recordSinkFunc) Write(_ context.Context, rec *unolog.Record) { f(rec) }
 
-func bridgeRecords(n int) []*unolog.Record {
-	cap := &bridgeCapture{}
-	rt := unolog.MustCompile(unolog.Config{Sink: cap, SamplingRate: 1})
-	for range 64 {
-		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
-		benchmarkFields(op.Context(), n)
-		op.End(nil)
-	}
-	return cap.recs
+func withRecord(fields int, use func(*unolog.Record)) {
+	rt := unolog.MustCompile(unolog.Config{Sink: recordSinkFunc(use), SamplingRate: 1})
+	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
+	benchmarkFields(op.Context(), fields)
+	op.End(nil)
+}
+
+func withAnyRecord(use func(*unolog.Record)) {
+	rt := unolog.MustCompile(unolog.Config{Sink: recordSinkFunc(use), SamplingRate: 1})
+	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "job"})
+	unolog.Add(op.Context(), "payload", map[string]any{"id": 7, "valid": true})
+	op.End(nil)
 }
 
 func BenchmarkHostFloors(b *testing.B) {
@@ -111,15 +114,15 @@ func BenchmarkAdapterSlog(b *testing.B) {
 	sink := uslog.New(logger)
 	rt := unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1})
 	ctx := context.Background()
-	recs := bridgeRecords(12)
 
 	b.Run("bridge_only_12_fields", func(b *testing.B) {
-		b.ReportAllocs()
-		i := 0
-		for b.Loop() {
-			sink.Write(ctx, recs[i&63])
-			i++
-		}
+		withRecord(12, func(rec *unolog.Record) {
+			_ = rec.Encoded() // bridge-only rows exclude canonical encoding
+			b.ReportAllocs()
+			for b.Loop() {
+				sink.Write(ctx, rec)
+			}
+		})
 	})
 
 	b.Run("write_12_fields", func(b *testing.B) {
@@ -145,15 +148,15 @@ func BenchmarkAdapterZap(b *testing.B) {
 	sink := uzap.New(zap.New(core))
 	rt := unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1})
 	ctx := context.Background()
-	recs := bridgeRecords(12)
 
 	b.Run("bridge_only_12_fields", func(b *testing.B) {
-		b.ReportAllocs()
-		i := 0
-		for b.Loop() {
-			sink.Write(ctx, recs[i&63])
-			i++
-		}
+		withRecord(12, func(rec *unolog.Record) {
+			_ = rec.Encoded() // bridge-only rows exclude canonical encoding
+			b.ReportAllocs()
+			for b.Loop() {
+				sink.Write(ctx, rec)
+			}
+		})
 	})
 
 	b.Run("write_12_fields", func(b *testing.B) {
@@ -173,23 +176,48 @@ func BenchmarkAdapterZap(b *testing.B) {
 func BenchmarkAdapterZerolog(b *testing.B) {
 	logger := zerolog.New(io.Discard)
 	sink := uzerolog.New(&logger)
+	canonicalSink := uzerolog.NewCanonical(io.Discard)
 	rt := unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1})
+	canonicalRT := unolog.MustCompile(unolog.Config{Sink: canonicalSink, SamplingRate: 1})
 	ctx := context.Background()
-	recs := bridgeRecords(12)
 
 	b.Run("bridge_only_12_fields", func(b *testing.B) {
-		b.ReportAllocs()
-		i := 0
-		for b.Loop() {
-			sink.Write(ctx, recs[i&63])
-			i++
-		}
+		withRecord(12, func(rec *unolog.Record) {
+			_ = rec.Encoded() // bridge-only rows exclude canonical encoding
+			b.ReportAllocs()
+			for b.Loop() {
+				sink.Write(ctx, rec)
+			}
+		})
+	})
+	b.Run("bridge_only_any", func(b *testing.B) {
+		withAnyRecord(func(rec *unolog.Record) {
+			b.ReportAllocs()
+			for b.Loop() {
+				sink.Write(ctx, rec)
+			}
+		})
+	})
+	b.Run("bridge_only_canonical_12_fields", func(b *testing.B) {
+		withRecord(12, func(rec *unolog.Record) {
+			_ = rec.Encoded()
+			b.ReportAllocs()
+			for b.Loop() {
+				canonicalSink.Write(ctx, rec)
+			}
+		})
 	})
 
 	b.Run("write_12_fields", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			adapterEvent(ctx, rt)
+		}
+	})
+	b.Run("write_canonical_12_fields", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			adapterEvent(ctx, canonicalRT)
 		}
 	})
 	b.Run("write_empty", func(b *testing.B) {

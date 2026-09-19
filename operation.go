@@ -3,7 +3,6 @@ package unolog
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"runtime"
 	"slices"
@@ -85,6 +84,8 @@ func (op *Operation) Context() context.Context {
 // claim. Concurrent first calls are safe: exactly one wins the claim
 // and commits; the others wait and return the published result. After
 // End every write through the operation context is dropped.
+// Error, Is, Unwrap, String, marshaling, sampler, and sink callbacks run
+// synchronously and must return; Go cannot forcibly stop a blocked method.
 func (op *Operation) End(errp *error) (emitted bool) {
 	// A nil *Operation and the zero Operation are both no-ops: the zero
 	// value carries no event, so there is nothing to commit. This keeps
@@ -150,8 +151,6 @@ func (op *Operation) End(errp *error) (emitted bool) {
 		panicked: recovered != nil,
 		scan:     scan,
 	}
-	op.annotatePostSeal(in)
-
 	emitted = op.commit(in)
 	op.emitted = emitted
 
@@ -187,18 +186,21 @@ func (op *Operation) awaitPublication() bool {
 // encode-time dedupe still resolves the wire member last-write-wins;
 // only the sampler's typed view is kind-sensitive.
 type walScan struct {
-	outcome    Outcome
-	hasOutcome bool
-	code       int // resolved http.status (outcome + sampling input)
-	hasCode    bool
-	opCode     int // explicit op.code field (non-HTTP operations)
-	hasOpCode  bool
-	method     string
-	path       string
+	outcome Outcome
+	code    int // resolved http.status (outcome + sampling input)
+	opCode  int // explicit op.code field (non-HTTP operations)
+	method  string
+	path    string
+	name    string // last-write op.name (string), if any
 
+	hasOutcome     bool
+	hasCode        bool
+	hasOpCode      bool
+	hasMethod      bool
+	hasPath        bool
 	hasDomain      bool // user wrote op.domain/op.name/... (any kind)
 	hasName        bool
-	name           string // last-write op.name (string), if any
+	hasStringName  bool
 	hasID          bool
 	hasSource      bool
 	hasAttempt     bool
@@ -227,19 +229,22 @@ func scanWAL(ev *event) walScan {
 				s.hasOpCode = true
 			}
 		case KeyHTTPMethod:
-			if s.method == "" && f.kind == KindString {
+			if !s.hasMethod && f.kind == KindString {
 				s.method = f.str
+				s.hasMethod = true
 			}
 		case KeyHTTPPath:
-			if s.path == "" && f.kind == KindString {
+			if !s.hasPath && f.kind == KindString {
 				s.path = f.str
+				s.hasPath = true
 			}
 		case KeyOpDomain:
 			s.hasDomain = true
 		case KeyOpName:
 			s.hasName = true
-			if s.name == "" && f.kind == KindString {
+			if !s.hasStringName && f.kind == KindString {
 				s.name = f.str
+				s.hasStringName = true
 			}
 		case KeyOpID:
 			s.hasID = true
@@ -259,7 +264,7 @@ func scanWAL(ev *event) walScan {
 // the Operation itself (ev, rt, start, ctx, record). One struct instead
 // of a ten-parameter call, and the natural home for these semantics:
 // all of it describes the sealed event between seal and commit. End
-// passes it by pointer: the struct is 200 bytes (it embeds walScan),
+// passes it by pointer: the struct embeds walScan,
 // and by-value copies showed up in the lifecycle benchmarks.
 type commitInput struct {
 	outcome  Outcome // resolved outcome (panic > error > explicit > 5xx > success)
@@ -283,13 +288,18 @@ func (op *Operation) commit(in *commitInput) bool {
 	policy := rt.policyFor(start.Domain)
 	level := levelFloor(levelFromPolicy(policy, in.outcome), ev.requestedLevel, ev.hasRequestedLvl)
 
-	sampleIn := buildSampleInput(ev, start, in, level)
+	// Custom samplers can look up completion fields. Built-in sampling
+	// only needs scalars, so dropped events need no final annotations.
+	if rt.sampler != nil {
+		op.annotatePostSeal(in)
+	}
 
 	// The keep-everything fast path (rate == 1.0, no sampler, no level
 	// rates, no policies): healthy events can never be dropped, so the
 	// gate is skipped entirely. Error/panic events bypass the gate
 	// structurally, so the flag only short-circuits the healthy branch.
 	if !rt.alwaysKeep {
+		sampleIn := buildSampleInput(ev, start, in, level)
 		if !sampleIn.HasError {
 			if rt.sampler != nil {
 				if !rt.sampler(sampleIn) {
@@ -299,6 +309,9 @@ func (op *Operation) commit(in *commitInput) bool {
 				return false
 			}
 		}
+	}
+	if rt.sampler == nil {
+		op.annotatePostSeal(in)
 	}
 
 	rec := &op.record
@@ -396,9 +409,9 @@ func resolveOutcome(err error, recovered any, code int, explicit Outcome) Outcom
 	}
 	if err != nil {
 		switch {
-		case errors.Is(err, context.Canceled):
+		case safeErrorIs(err, context.Canceled):
 			return OutcomeCanceled
-		case errors.Is(err, context.DeadlineExceeded):
+		case safeErrorIs(err, context.DeadlineExceeded):
 			return OutcomeTimeout
 		default:
 			return OutcomeFailure
@@ -420,14 +433,14 @@ func buildSampleInput(ev *event, start OperationStart, in *commitInput, level Le
 	hasError := in.err != nil || in.panicked || ev.hasErr ||
 		(in.outcome != OutcomeSuccess && in.outcome != OutcomeRetry)
 	opName := start.Name
-	if in.scan.name != "" {
+	if in.scan.hasStringName {
 		opName = in.scan.name
 	}
 	// HTTP samplers see http.status; non-HTTP samplers see their
 	// canonical op.code (the README's non-HTTP contract for Code).
 	// StatusCode stays the HTTP-compat view of http.status in both.
 	samplerCode := in.code
-	if start.Domain != DomainHTTP && in.scan.hasOpCode {
+	if start.Domain != DomainHTTP {
 		samplerCode = in.scan.opCode
 	}
 	return SampleInput{
