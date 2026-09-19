@@ -12,8 +12,8 @@ package std
 // first-committed status (ResolveStatus's rules: 500 on a
 // pre-response panic, 200 for an implicit status), the outcome/level/
 // message resolution of the lifecycle core, and last-write-wins user
-// fields. Hijacks and flushes have no status effect and are exercised
-// for interface delegation and -race cleanliness.
+// fields. Flush commits an implicit 200 when no final header exists;
+// failed hijacks only exercise interface delegation and -race cleanliness.
 
 import (
 	"bufio"
@@ -52,16 +52,28 @@ func (w *fuzzBaseWriter) Write(p []byte) (int, error) {
 	}
 	return w.body.Write(p)
 }
-func (w *fuzzBaseWriter) WriteHeader(code int) { w.code = code }
-func (w *fuzzBaseWriter) ReadFrom(r io.Reader) (int64, error) {
-	if w.code == 0 {
-		w.code = http.StatusOK
+func (w *fuzzBaseWriter) WriteHeader(code int) {
+	if w.code != 0 {
+		return
 	}
-	n, err := w.body.ReadFrom(r)
+	if code < 100 || code > 999 {
+		panic(fmt.Sprintf("invalid WriteHeader code %v", code))
+	}
+	if code >= 200 || code == http.StatusSwitchingProtocols {
+		w.code = code
+	}
+}
+func (w *fuzzBaseWriter) ReadFrom(r io.Reader) (int64, error) {
+	n, err := io.Copy(struct{ io.Writer }{Writer: w}, r)
 	w.readFromN = n
 	return n, err
 }
 func (w *fuzzBaseWriter) CloseNotify() <-chan bool { return nil }
+
+func (w *fuzzBaseWriter) flush() {
+	w.WriteHeader(http.StatusOK)
+	w.flushed = true
+}
 
 // fuzzBase exposes the shared base writer through any wrapper type.
 func (w *fuzzBaseWriter) fuzzBase() *fuzzBaseWriter { return w }
@@ -72,7 +84,7 @@ func (w *fuzzBaseWriter) fuzzBase() *fuzzBaseWriter { return w }
 // exact (a writer only exposes what its mask selected).
 type fwFlush struct{ *fuzzBaseWriter }
 
-func (w *fwFlush) Flush() { w.flushed = true }
+func (w *fwFlush) Flush() { w.flush() }
 
 type fwHijack struct{ *fuzzBaseWriter }
 
@@ -92,7 +104,7 @@ type fwFlushHijack struct {
 	*fuzzBaseWriter
 }
 
-func (w *fwFlushHijack) Flush() { w.flushed = true }
+func (w *fwFlushHijack) Flush() { w.flush() }
 func (w *fwFlushHijack) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.hijacked = true
 	return nil, nil, errHijackUnavailable
@@ -102,7 +114,7 @@ type fwFlushPush struct {
 	*fuzzBaseWriter
 }
 
-func (w *fwFlushPush) Flush() { w.flushed = true }
+func (w *fwFlushPush) Flush() { w.flush() }
 func (w *fwFlushPush) Push(string, *http.PushOptions) error {
 	w.pushed = true
 	return nil
@@ -126,7 +138,7 @@ type fwFull struct {
 	*fuzzBaseWriter
 }
 
-func (w *fwFull) Flush() { w.flushed = true }
+func (w *fwFull) Flush() { w.flush() }
 func (w *fwFull) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.hijacked = true
 	return nil, nil, errHijackUnavailable
@@ -191,7 +203,7 @@ const (
 
 var (
 	mwKeys     = []string{"ua", "ub", "uc"}
-	mwStatuses = []int{0, 200, 201, 204, 301, 400, 404, 418, 500, 503}
+	mwStatuses = []int{0, 200, 201, 204, 301, 400, 404, 418, 500, 503, 100, 101, 102, 103, 99, 1000}
 	mwLevels   = []unolog.Level{unolog.LevelDebug, unolog.LevelInfo, unolog.LevelWarn, unolog.LevelError, unolog.Level(99)}
 )
 
@@ -269,8 +281,7 @@ type mwModel struct {
 	requested      unolog.Level
 	hasRequested   bool
 	committed      int  // first committed status (0 = nothing committed)
-	started        bool // any Write/WriteHeader/ReadFrom happened
-	lastHeader     int  // last WriteHeader forwarded (for the base writer)
+	started        bool // final header or implicit 200 committed
 	userFields     map[string]any
 	panicValue     any
 	hasPanic       bool
@@ -293,11 +304,19 @@ func (m *mwModel) apply(a mwAction, mask byte) {
 			m.hasRequested = true
 		}
 	case mwWriteHeader:
-		if !m.started {
-			m.committed = a.status
-			m.started = true
+		if m.started {
+			return
 		}
-		m.lastHeader = a.status // forwarded regardless
+		if a.status < 100 || a.status > 999 {
+			m.hasPanic = true
+			m.panicValue = fmt.Sprintf("invalid WriteHeader code %v", a.status)
+			return
+		}
+		if a.status < 200 && a.status != http.StatusSwitchingProtocols {
+			return
+		}
+		m.committed = a.status
+		m.started = true
 	case mwWrite:
 		if !m.started {
 			m.committed = http.StatusOK
@@ -306,6 +325,10 @@ func (m *mwModel) apply(a mwAction, mask byte) {
 	case mwFlush:
 		if mask&0x1 != 0 { // the flush only reaches the writer when promoted
 			m.flushExecuted = true
+			if !m.started {
+				m.committed = http.StatusOK
+				m.started = true
+			}
 		}
 	case mwHijack:
 		if mask&0x2 != 0 {
@@ -414,7 +437,27 @@ func FuzzMiddlewareRequest(f *testing.F) {
 	seed(
 		0x1,
 		mwAction{kind: mwFlush},
-		mwAction{kind: mwWriteHeader, status: http.StatusAccepted},
+		mwAction{kind: mwWriteHeader, status: http.StatusServiceUnavailable},
+	)
+	seed(
+		0x0,
+		mwAction{kind: mwWriteHeader, status: http.StatusEarlyHints},
+		mwAction{kind: mwWriteHeader, status: http.StatusServiceUnavailable},
+	)
+	seed(
+		0x0,
+		mwAction{kind: mwWriteHeader, status: http.StatusSwitchingProtocols},
+		mwAction{kind: mwWriteHeader, status: http.StatusServiceUnavailable},
+	)
+	seed(
+		0x0,
+		mwAction{kind: mwWriteHeader, status: 0},
+		mwAction{kind: mwAdd, key: "ua", value: "unreachable"},
+	)
+	seed(
+		0x0,
+		mwAction{kind: mwWriteHeader, status: http.StatusOK},
+		mwAction{kind: mwWriteHeader, status: 0}, // ignored after a final header
 	)
 	seed(
 		0x0,
@@ -439,7 +482,7 @@ func FuzzMiddlewareRequest(f *testing.F) {
 		m := &mwModel{userFields: map[string]any{}}
 		for _, a := range actions {
 			m.apply(a, mask)
-			if a.kind == mwPanic {
+			if m.hasPanic {
 				break // the panic unwinds; later actions never run
 			}
 		}
@@ -499,6 +542,9 @@ func FuzzMiddlewareRequest(f *testing.F) {
 			t.Fatalf("base writer does not expose fuzzBase: %T", base)
 		}
 		fb := baseFuzzer.fuzzBase()
+		if fb.code != m.committed {
+			t.Fatalf("writer status = %d, want %d", fb.code, m.committed)
+		}
 		if m.flushExecuted != fb.flushed {
 			t.Fatalf("flush executed=%v, writer saw %v (mask %x)", m.flushExecuted, fb.flushed, mask)
 		}

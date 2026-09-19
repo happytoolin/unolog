@@ -21,53 +21,65 @@ const NarrowLimit = 24
 
 // LastIndices returns the indices of each key's last occurrence, in
 // forward order — last-write-wins duplicate resolution. Narrow lists
-// use an allocation-free scan; wide ones collect seen keys backward in
+// use a bounded scan; wide ones collect seen keys backward in
 // a map. The key function selects each item's comparison key (bridges
 // that alias envelope-colliding keys pass the aliased view).
 func LastIndices[T any](items []T, key func(T) string) []int {
+	return AppendLastIndices(nil, items, key)
+}
+
+// AppendLastIndices appends each key's last occurrence to dst. Callers with
+// narrow hot paths can provide stack storage and avoid allocating the result.
+func AppendLastIndices[T any](dst []int, items []T, key func(T) string) []int {
 	if len(items) <= NarrowLimit {
-		var stack [NarrowLimit]int // allocation-free narrow path
-		n := 0
+		var keys [NarrowLimit]string
+		for i := range items {
+			keys[i] = key(items[i])
+		}
 		for i := range items {
 			last := true
 			for j := i + 1; j < len(items); j++ {
-				if key(items[j]) == key(items[i]) {
+				if keys[j] == keys[i] {
 					last = false
 					break
 				}
 			}
 			if last {
-				stack[n] = i
-				n++
+				dst = append(dst, i)
 			}
 		}
-		return stack[:n:n]
+		return dst
 	}
 	seen := make(map[string]struct{}, len(items)*2)
-	kept := make([]int, 0, len(items))
+	start := len(dst)
 	for i, item := range slices.Backward(items) {
-		if _, dup := seen[key(item)]; dup {
+		k := key(item)
+		if _, dup := seen[k]; dup {
 			continue
 		}
-		seen[key(item)] = struct{}{}
-		kept = append(kept, i)
+		seen[k] = struct{}{}
+		dst = append(dst, i)
 	}
-	slices.Reverse(kept)
-	return kept
+	slices.Reverse(dst[start:])
+	return dst
 }
 
 // ErrorMessage renders an error field's message, tolerating the two
-// ways a user error can explode: typed-nil errors (non-nil interface,
-// nil pointer — their Error() nil-derefs, and fmt renders them safely
-// as "<nil>") and Error() implementations that panic (the panic is
+// ways a user error can explode: typed-nil errors and Error()
+// implementations that panic (the panic is
 // contained and the value rendered via fmt, the same fence the core
 // encoder applies).
 func ErrorMessage(err error) (msg string) {
 	if err == nil {
 		return ""
 	}
-	if v := reflect.ValueOf(err); v.Kind() == reflect.Pointer && v.IsNil() {
-		return fmt.Sprint(err)
+	v := reflect.ValueOf(err)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if v.IsNil() {
+			return "<nil>"
+		}
+	default:
 	}
 	defer func() {
 		if recover() != nil {

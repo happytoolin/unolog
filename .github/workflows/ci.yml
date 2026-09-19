@@ -36,7 +36,7 @@ jobs:
             echo "== testing $moddir =="
             (
               cd "$moddir"
-              go test ./...
+              go test -shuffle=on -count=1 ./...
             )
           done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
@@ -49,7 +49,7 @@ jobs:
             echo "== racing $moddir =="
             (
               cd "$moddir"
-              go test -race ./...
+              go test -race -shuffle=on -count=1 ./...
             )
           done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
@@ -179,3 +179,7 @@ jobs:
           go test . -run '^$' -fuzz '^FuzzCompileConfig$' -fuzztime 60s
           go test . -run '^$' -fuzz '^FuzzCrashAdversarialValues$' -fuzztime 60s
           go test . -run '^$' -fuzz '^FuzzCrashGuardedInterleavings$' -fuzztime 60s
+
+      - name: Fuzz net/http middleware state machine
+        working-directory: integration/std
+        run: go test . -run '^$' -fuzz '^FuzzMiddlewareRequest$' -fuzztime 60s

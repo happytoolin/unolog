@@ -18,40 +18,37 @@ func runtimeFor() *unolog.Runtime {
 	return unolog.MustCompile(unolog.Config{Sink: discardSink{}, SamplingRate: 1})
 }
 
-// BenchmarkWALAddStableKeys measures the single-pair Add gate by
-// delta: Start+Add minus Start-only (constant key/value, the gate
-// shape). Fresh operations per iteration keep the WAL at steady state —
-// no unbounded growth, no pool return noise.
-func BenchmarkWALAddStableKeys(b *testing.B) {
+// BenchmarkWALAddStableKeysLifecycle measures the cost of adding and
+// finalizing one field. Both rows complete each operation for steady pool reuse.
+func BenchmarkWALAddStableKeysLifecycle(b *testing.B) {
 	rt := runtimeFor()
 	ctx := context.Background()
-	b.Run("start_only", func(b *testing.B) {
+	b.Run("no_fields", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			_ = unolog.Start(ctx, rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"})
+			unolog.Start(ctx, rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"}).End(nil)
 		}
 	})
-	b.Run("start_add_pair", func(b *testing.B) {
+	b.Run("one_field", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			op := unolog.Start(ctx, rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"})
 			unolog.Add(op.Context(), "user_id", "u_8472")
+			op.End(nil)
 		}
 	})
 }
 
-// BenchmarkWALAddMany measures the variadic multi-pair Add shape.
-func BenchmarkWALAddMany(b *testing.B) {
+// BenchmarkWALAddManyLifecycle measures the variadic multi-pair Add shape.
+func BenchmarkWALAddManyLifecycle(b *testing.B) {
 	rt := runtimeFor()
-	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"})
-	ctx := op.Context()
+	ctx := context.Background()
 	b.ReportAllocs()
-	i := 0
 	for b.Loop() {
-		unolog.Add(ctx, "a", i, "b", i, "c", i, "d", i, "e", i, "f", i)
-		i++
+		op := unolog.Start(ctx, rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"})
+		unolog.Add(op.Context(), "a", 1, "b", 2, "c", 3, "d", 4, "e", 5, "f", 6)
+		op.End(nil)
 	}
-	op.End(nil)
 }
 
 // benchmarkFields appends n typed fields to the operation context.

@@ -277,8 +277,11 @@ queue consumers.
 - `adapter/zap`
 - `adapter/zerolog`
 
-Adapters expose `New` only (the `SinkOptions`/`NewWithOptions` shapes
-were removed at 1.0: nothing to configure until proven otherwise).
+Adapters expose `New`. The zerolog adapter also exposes
+`NewWithLoggerTimestamp` for loggers configured with
+`.With().Timestamp()`, because zerolog does not expose hook inspection.
+`NewCanonical` writes the canonical line directly when zerolog context,
+hooks, sampling, and rendering customization are not needed.
 Fields arrive in insertion order, deterministically, as typed
 constructors.
 
@@ -317,7 +320,7 @@ one session):
 |---|---:|---:|---:|---:|
 | `slog` JSON | 801 ns | 1752 ns | +951 ns (+119%) | 1 → 4 |
 | `zap` JSON | 609 ns | 1589 ns | +980 ns (+161%) | 1 → 4 |
-| `zerolog` | 197 ns | 716 ns | +519 ns (+263%) | 0 → 3 |
+| `zerolog` canonical output | 197 ns | 716 ns | +519 ns (+263%) | 0 → 3 |
 
 That added slice is the entire unolog cost — `Start`, 12 `Add`s, one sampling
 decision, bridge, encode — and it buys a single reusable record that every sink
@@ -335,7 +338,7 @@ Then the unolog paths alone (`Start → Add ×12 → End → sink`, no router):
 |---|---:|---:|
 | core only, discard sink | 255 | 2 |
 | first-party JSON sink, 12 fields | 704 | 3 |
-| zerolog adapter, 12 fields | 716 | 3 |
+| zerolog canonical output, 12 fields | 716 | 3 |
 | zap adapter, 12 fields | 1589 | 4 |
 | slog adapter, 12 fields | 1752 | 4 |
 
@@ -343,6 +346,9 @@ What that means:
 
 - The core pipeline is ~0.12–0.26 µs with two allocations; everything to its
   right is the sink or host logger doing its own work.
+- `NewCanonical` preserves the measured zerolog row without private logger
+  access. `New` uses zerolog's public field API, honors its customization, and
+  costs about 0.2 µs more end to end while removing one lifecycle allocation.
 - **Sampled-out requests cost 123 ns and zero allocations** — less than most
   loggers spend formatting a single line. Health traffic is effectively free.
 - Sampling runs before any sink work, and errors/panics bypass sampling
@@ -582,7 +588,7 @@ import (
 
 func main() {
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
-	sink := uzerolog.New(&logger)
+	sink := uzerolog.NewWithLoggerTimestamp(&logger)
 	mw := std.Middleware(unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1}))
 
 	mux := http.NewServeMux()

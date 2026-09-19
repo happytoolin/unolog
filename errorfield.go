@@ -10,12 +10,11 @@ func structuredErrorField(err error) map[string]any {
 	if err == nil {
 		return nil
 	}
-	// Typed-nil errors (non-nil interface, nil pointer) must not reach
-	// Error()/Unwrap(): they panic on nil dereference and would crash
-	// finalization. fmt renders them safely as "<nil>".
+	// Typed-nil errors must not reach Error()/Unwrap(): methods on any
+	// nil-capable defined type can panic or loop during finalization.
 	if isTypedNilError(err) {
 		return map[string]any{
-			"message": fmt.Sprint(err),
+			"message": "<nil>",
 			"type":    fmt.Sprintf("%T", err),
 		}
 	}
@@ -32,14 +31,19 @@ func structuredErrorField(err error) map[string]any {
 	return field
 }
 
-// isTypedNilError reports whether err is a non-nil interface holding
-// a nil pointer — the value whose Error() call would panic.
+// isTypedNilError reports whether err is a non-nil interface holding a
+// nil value. Error implementations can use any nil-capable defined type.
 func isTypedNilError(err error) bool {
 	if err == nil {
 		return false
 	}
 	v := reflect.ValueOf(err)
-	return v.Kind() == reflect.Pointer && v.IsNil()
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func structuredPanicField(recovered any) map[string]any {
@@ -71,7 +75,7 @@ func safeErrorMessage(err error) (msg string) {
 		return ""
 	}
 	if isTypedNilError(err) {
-		return fmt.Sprint(err) // renders "<nil>"
+		return "<nil>"
 	}
 	defer func() {
 		if recover() != nil {
@@ -81,14 +85,14 @@ func safeErrorMessage(err error) (msg string) {
 	return err.Error()
 }
 
-// maxUnwrapDepth bounds the Unwrap walk in deepestUnwrappedError.
-// Real wrapped chains are shallow; the bound also ends any chain that
-// manages to cycle without repeating a comparable error value.
-const maxUnwrapDepth = 100
+// maxUnwrapDepth bounds genuinely acyclic, user-generated error graphs.
+// Comparable errors and reference-backed incomparable errors stop on cycles.
+const maxUnwrapDepth = 4096
 
 func deepestUnwrappedError(err error) error {
 	current := err
 	seen := make(map[error]struct{})
+	seenRefs := make(map[errorReference]struct{})
 	for depth := 0; current != nil; depth++ {
 		if depth >= maxUnwrapDepth {
 			return current
@@ -98,6 +102,11 @@ func deepestUnwrappedError(err error) error {
 				return current
 			}
 			seen[current] = struct{}{}
+		} else if ref, ok := errorReferenceOf(current); ok {
+			if _, exists := seenRefs[ref]; exists {
+				return current
+			}
+			seenRefs[ref] = struct{}{}
 		}
 		next := safeUnwrap(current)
 		if next == nil {
@@ -125,7 +134,95 @@ func isComparableError(err error) bool {
 	if err == nil {
 		return true
 	}
-	return reflect.TypeOf(err).Comparable()
+	return reflect.ValueOf(err).Comparable()
+}
+
+type errorReference struct {
+	typ reflect.Type
+	ptr uintptr
+	len int
+	cap int
+}
+
+func errorReferenceOf(err error) (errorReference, bool) {
+	v := reflect.ValueOf(err)
+	switch v.Kind() {
+	case reflect.Slice:
+		if v.Len() == 0 {
+			return errorReference{}, false
+		}
+		return errorReference{typ: v.Type(), ptr: v.Pointer(), len: v.Len(), cap: v.Cap()}, true
+	case reflect.Chan, reflect.Map, reflect.Pointer:
+		return errorReference{typ: v.Type(), ptr: v.Pointer()}, true
+	default:
+		return errorReference{}, false
+	}
+}
+
+// safeErrorIs preserves errors.Is matching for ordinary error trees,
+// but bounds hostile graphs and contains panics in Is and Unwrap.
+func safeErrorIs(err, target error) bool {
+	if err == nil || target == nil {
+		return err == target //nolint:errorlint // match errors.Is nil semantics without traversal
+	}
+	if isTypedNilError(err) {
+		return false
+	}
+	remaining := maxUnwrapDepth
+	return matchError(err, target, make(map[error]struct{}), make(map[errorReference]struct{}), &remaining)
+}
+
+func matchError(
+	err, target error,
+	seen map[error]struct{},
+	seenRefs map[errorReference]struct{},
+	remaining *int,
+) (matched bool) {
+	defer func() {
+		if recover() != nil {
+			matched = false
+		}
+	}()
+	for *remaining > 0 {
+		*remaining--
+		if err == nil {
+			return false
+		}
+		if sameError(err, target) {
+			return true
+		}
+		if isComparableError(err) {
+			if _, ok := seen[err]; ok {
+				return false
+			}
+			seen[err] = struct{}{}
+		} else if ref, ok := errorReferenceOf(err); ok {
+			if _, exists := seenRefs[ref]; exists {
+				return false
+			}
+			seenRefs[ref] = struct{}{}
+		}
+		if matcher, ok := err.(interface{ Is(error) bool }); ok && matcher.Is(target) {
+			return true
+		}
+		switch wrapper := err.(type) { //nolint:errorlint // walk one node; errors.Is itself is unbounded
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapper.Unwrap() {
+				if *remaining == 0 {
+					return false
+				}
+				if matchError(child, target, seen, seenRefs, remaining) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // frameworkStyleErrorMessage recognizes framework-shaped errors — any
@@ -137,7 +234,14 @@ func isComparableError(err error) bool {
 // the human message, not the wrapper text. Reflection is guarded
 // (invalid, nil, and unexported values are skipped); String() calls
 // are panic-fenced.
-func frameworkStyleErrorMessage(err error) (string, bool) {
+func frameworkStyleErrorMessage(err error) (text string, ok bool) {
+	// FieldByName can panic when a promoted field crosses a nil embedded
+	// pointer. Such an error still has its ordinary Error() fallback.
+	defer func() {
+		if recover() != nil {
+			text, ok = "", false
+		}
+	}()
 	value := reflect.ValueOf(err)
 	if !value.IsValid() {
 		return "", false
@@ -165,7 +269,7 @@ func frameworkStyleErrorMessage(err error) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	text := fmt.Sprint(message)
+	text = fmt.Sprint(message)
 	if text == "" {
 		return "", false
 	}

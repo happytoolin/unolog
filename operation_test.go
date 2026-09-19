@@ -403,12 +403,66 @@ func TestSampleInputCodeSurfacesOpCode(t *testing.T) {
 		t.Fatalf("job StatusCode = %d, want 0 (http.status view)", jobStatus)
 	}
 
+	op = Start(t.Context(), rt, OperationStart{Domain: DomainJob, Name: "job"})
+	Add(op.Context(), KeyHTTPStatus, 201)
+	op.End(nil)
+	if jobCode != 0 || jobStatus != 201 {
+		t.Fatalf("job Code/StatusCode = %d/%d, want 0/201 without op.code", jobCode, jobStatus)
+	}
+
 	// 2xx, not 5xx: error events bypass the sampler structurally.
 	hop := Start(context.Background(), rt, OperationStart{Domain: DomainHTTP, Name: "request"})
 	Add(hop.Context(), "http.status", 201, "op.code", 7)
 	_ = hop.End(nil)
 	if httpCode != 201 {
 		t.Fatalf("http Code = %d, want 201 (http.status wins on HTTP)", httpCode)
+	}
+}
+
+func TestSampleInputEmptyStringOverrides(t *testing.T) {
+	var got SampleInput
+	rt, _ := testRT(t, func(c *Config) {
+		c.Sampler = func(in SampleInput) bool {
+			got = in
+			return true
+		}
+	})
+	op := Start(t.Context(), rt, OperationStart{Domain: DomainHTTP, Name: "original"})
+	Add(op.Context(), KeyHTTPMethod, "GET", KeyHTTPPath, "/keep", KeyOpName, "old")
+	Add(op.Context(), KeyHTTPMethod, "", KeyHTTPPath, "", KeyOpName, "")
+	// Wrong kinds do not replace the last usable typed value, including empty strings.
+	Add(op.Context(), KeyHTTPMethod, 1, KeyHTTPPath, 2, KeyOpName, 3)
+	op.End(nil)
+	if got.Method != "" || got.Path != "" || got.Operation != "" {
+		t.Fatalf("sampler got method=%q path=%q operation=%q; want empty overrides", got.Method, got.Path, got.Operation)
+	}
+}
+
+func TestCustomSamplerSeesCompletionFields(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		calls := 0
+		rt, _ := testRT(t, func(c *Config) {
+			c.Sampler = func(in SampleInput) bool {
+				calls++
+				for key, want := range map[string]any{
+					KeyOpDomain: string(DomainJob), KeyOpName: "job", KeyOpID: "j1",
+					KeyOpCode: int64(42), KeyOpOutcome: string(OutcomeSuccess),
+				} {
+					if got, ok := in.Lookup(key); !ok || got != want {
+						t.Fatalf("sampler lookup %s = %v (%v), want %v", key, got, ok, want)
+					}
+				}
+				if _, ok := in.Lookup(KeyDurationMS); !ok {
+					t.Fatal("sampler cannot see completion duration")
+				}
+				return keep
+			}
+		})
+		op := Start(t.Context(), rt, OperationStart{Domain: DomainJob, Name: "job", ID: "j1"})
+		Add(op.Context(), KeyOpCode, 42)
+		if emitted := op.End(nil); emitted != keep || calls != 1 {
+			t.Fatalf("emitted=%v calls=%d, want %v and 1", emitted, calls, keep)
+		}
 	}
 }
 

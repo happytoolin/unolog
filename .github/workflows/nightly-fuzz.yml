@@ -47,13 +47,22 @@ jobs:
               echo "  - $target" >> /tmp/fuzz/core-failures
             fi
           done
+          echo "=== FuzzMiddlewareRequest ==="
+          if (cd integration/std && go test . -run '^$' -fuzz '^FuzzMiddlewareRequest$' -fuzztime 10m); then
+            echo "PASS FuzzMiddlewareRequest"
+          else
+            echo "FAIL FuzzMiddlewareRequest"
+            echo "  - FuzzMiddlewareRequest" >> /tmp/fuzz/core-failures
+          fi
 
       - name: Upload crash artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: core-crash-artifacts
-          path: testdata/fuzz/
+          path: |
+            testdata/fuzz/
+            integration/std/testdata/fuzz/
           if-no-files-found: ignore
 
       - name: Decide whether core failed
