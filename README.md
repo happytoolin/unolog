@@ -684,6 +684,11 @@ format differences.
 
 - Framing inspiration: "Logging Sucks - Your Logs Are Lying To You" by Boris Tane: https://loggingsucks.com/
 
+## Contributing and Security
+
+- See [`CONTRIBUTING.md`](./CONTRIBUTING.md) before you open a pull request.
+- Report vulnerabilities as described in [`SECURITY.md`](./SECURITY.md).
+
 ## License
 
 MIT
