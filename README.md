@@ -323,21 +323,21 @@ formatted per line, and a sampled-out request never builds a record at all.
 ![unolog benchmarks](./assets/benchmarks.svg)
 
 Logging the same 12 fields to a discarded output — each logger alone, and the
-same logger end to end through unolog (Apple M4 / Go 1.27, means of 25 runs in
+same logger end to end through unolog (Apple M4 / Go 1.27, medians of 25 runs in
 one session):
 
 | Logger | alone | + unolog | added | allocs |
 |---|---:|---:|---:|---:|
-| `slog` JSON | 801 ns | 1752 ns | +951 ns (+119%) | 1 → 4 |
-| `zap` JSON | 609 ns | 1589 ns | +980 ns (+161%) | 1 → 4 |
-| `zerolog` canonical output | 197 ns | 716 ns | +519 ns (+263%) | 0 → 3 |
+| `slog` JSON | 866 ns | 1611 ns | +745 ns (+86%) | 1 → 8 |
+| `zap` JSON | 667 ns | 1415 ns | +748 ns (+112%) | 1 → 8 |
+| `zerolog` canonical output | 202 ns | 748 ns | +546 ns (+270%) | 0 → 3 |
 
 That added slice is the entire unolog cost — `Start`, 12 `Add`s, one sampling
 decision, bridge, encode — and it buys a single reusable record that every sink
 and adapter shares. Your logger keeps doing its own work; unolog just never
 formats per line. With routing in the picture the shape flips: one unolog event
-through the std middleware costs 341 ns, less than one `slog` JSON line at
-486 ns, and a sampled-out request costs 123 ns with zero allocations.
+through the std middleware costs 362 ns, less than one `slog` JSON line at
+504 ns, and a sampled-out empty lifecycle costs 204 ns with two allocations.
 
 Compare pairs within a session: host-logger floors drift a few percent between
 recordings, so re-measure both rows together rather than mixing runs.
@@ -346,27 +346,27 @@ Then the unolog paths alone (`Start → Add ×12 → End → sink`, no router):
 
 | Path | ns/op | allocs/op |
 |---|---:|---:|
-| core only, discard sink | 255 | 2 |
-| first-party JSON sink, 12 fields | 704 | 3 |
-| zerolog canonical output, 12 fields | 716 | 3 |
-| zap adapter, 12 fields | 1589 | 4 |
-| slog adapter, 12 fields | 1752 | 4 |
+| core only, discard sink | 400 | 2 |
+| first-party JSON sink, 12 fields | 746 | 3 |
+| zerolog canonical output, 12 fields | 748 | 3 |
+| zap adapter, 12 fields | 1415 | 8 |
+| slog adapter, 12 fields | 1611 | 8 |
 
 What that means:
 
-- The core pipeline is ~0.12–0.26 µs with two allocations; everything to its
+- The core pipeline is ~0.20–0.40 µs with two allocations; everything to its
   right is the sink or host logger doing its own work.
 - `NewCanonical` preserves the measured zerolog row without private logger
   access. `New` uses zerolog's public field API, honors its customization, and
   costs about 0.2 µs more end to end while removing one lifecycle allocation.
-- **Sampled-out requests cost 123 ns and zero allocations** — less than most
-  loggers spend formatting a single line. Health traffic is effectively free.
+- **A sampled-out empty lifecycle costs 204 ns and two allocations** — less
+  than most loggers spend formatting a single line.
 - Sampling runs before any sink work, and errors/panics bypass sampling
   structurally — the cheap path can never hide a failure.
 - Twelve fields ride on one typed WAL slice: `Add` does not box per field, the
   record is encoded once, and every sink and adapter reads that same record.
-- Adapters add no allocations of their own; their rows are mostly the host
-  logger's own encoding cost.
+- Adapter rows include the bridge and host logger allocations; they are
+  end-to-end totals.
 
 Run the suites yourself:
 
