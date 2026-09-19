@@ -6,7 +6,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/gofiber/fiber/v3 v3.5.0
-	github.com/happytoolin/unolog v1.0.1
+	github.com/happytoolin/unolog v1.1.0
 	github.com/happytoolin/unolog/adapter/slog v0.0.0-00010101000000-000000000000
 	github.com/happytoolin/unolog/adapter/zap v0.0.0-00010101000000-000000000000
 	github.com/happytoolin/unolog/adapter/zerolog v0.0.0-00010101000000-000000000000

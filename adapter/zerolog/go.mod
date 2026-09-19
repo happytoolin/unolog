@@ -3,7 +3,7 @@ module github.com/happytoolin/unolog/adapter/zerolog
 go 1.25.0
 
 require (
-	github.com/happytoolin/unolog v1.0.1 // x-release-please-version
+	github.com/happytoolin/unolog v1.1.0 // x-release-please-version
 	github.com/rs/zerolog v1.35.1
 )
 
