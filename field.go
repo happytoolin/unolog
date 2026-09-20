@@ -95,9 +95,9 @@ func packAny(v any) fieldPayload {
 	return fieldPayload{data: e.data, meta: uintptr(e.typ)}
 }
 
-// anyValue rebuilds the any box from the two words. The type descriptor
-// round-trips through uintptr by design: it is static data, so it is
-// always reachable and never moved by the collector.
+// anyValue rebuilds the any box by re-reading the two payload words in
+// eface order, so it is a move and not a conversion. The type word is
+// static data: always reachable, never moved by the collector.
 func (p fieldPayload) anyValue() any {
 	if p.meta == 0 {
 		return nil
