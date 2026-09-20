@@ -57,7 +57,8 @@ func TestSinkWriteMapsAllKnownLevels(t *testing.T) {
 				unolog.DomainJob: {SuccessLevel: unolog.LevelDebug},
 			},
 		})
-		unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "t"}).End(nil)
+		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "t"})
+		op.End(nil)
 		if h.records[0].Level != stdslog.LevelDebug {
 			t.Fatalf("level = %v, want DEBUG", h.records[0].Level)
 		}

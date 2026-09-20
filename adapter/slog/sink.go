@@ -75,7 +75,10 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 	bufPtr := slogAttrPool.Get().(*[]stdslog.Attr) //nolint:forcetypeassert // the pool's New stores exactly *[]stdslog.Attr
 	attrs := (*bufPtr)[:0]
 	defer func() { recycleAttrs(bufPtr, attrs) }()
-	for _, i := range wire.LastIndices(fields, unolog.Field.Key) {
+	// Stack storage for the dedupe indices: the helper allocates a growing
+	// slice on every write, which showed up as five allocations per event.
+	var indexStorage [wire.NarrowLimit]int
+	for _, i := range rec.AppendLastIndices(indexStorage[:0]) {
 		attrs = append(attrs, attrOf(fields[i]))
 	}
 	s.logger.LogAttrs(ctx, slogLevel, rec.Message(), attrs...)

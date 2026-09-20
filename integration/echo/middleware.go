@@ -25,8 +25,8 @@ func Middleware(rt *unolog.Runtime) goecho.MiddlewareFunc {
 
 	return func(next goecho.HandlerFunc) goecho.HandlerFunc {
 		return func(c goecho.Context) (err error) {
-			op := flow.StartRequest(c.Request().Context(), rt, c.Request().Method, c.Request().URL.Path)
-			c.SetRequest(c.Request().WithContext(op.Context()))
+			op, ctx := flow.StartRequest(c.Request().Context(), rt, c.Request().Method, c.Request().URL.Path)
+			flow.AttachRequestContext(c.Request(), ctx)
 			var finalizeErr error
 
 			defer func() {
@@ -39,7 +39,7 @@ func Middleware(rt *unolog.Runtime) goecho.MiddlewareFunc {
 					ResponseStarted: c.Response().Committed,
 					ErrorStatus:     statusFromEchoError(finalizeErr),
 				})
-				flow.FinalizeRequest(op, route, status, finalizeErr, recovered)
+				flow.FinalizeRequest(&op, ctx, route, status, finalizeErr, recovered)
 
 				if recovered != nil {
 					panic(recovered)

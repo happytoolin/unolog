@@ -24,7 +24,7 @@ import (
 func BenchmarkEndDropPath(b *testing.B) {
 	rt := MustCompile(Config{Sink: dropCountSink{}, SamplingRate: 0})
 	const pre = 4096
-	ops := make([]*Operation, pre)
+	ops := make([]Operation, pre)
 	rebuild := func() {
 		for i := range ops {
 			ops[i] = Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "cleanup"})
@@ -48,7 +48,7 @@ func BenchmarkEndDropPath(b *testing.B) {
 func BenchmarkEndDropPathCustomSampler(b *testing.B) {
 	rt := MustCompile(Config{Sink: dropCountSink{}, Sampler: func(SampleInput) bool { return false }})
 	const pre = 4096
-	ops := make([]*Operation, pre)
+	ops := make([]Operation, pre)
 	rebuild := func() {
 		for i := range ops {
 			ops[i] = Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "cleanup"})
@@ -80,7 +80,7 @@ func BenchmarkRecordEncodeWrite12(b *testing.B) {
 	for i, k := range keys {
 		fields[i] = fieldStr(k, "v")
 	}
-	completedAt := time.Now()
+	completedAt := time.Now().UnixNano()
 	b.ReportAllocs()
 	for b.Loop() {
 		rec := &Record{level: LevelInfo, msg: DefaultMessage, fields: fields, completedAt: completedAt}

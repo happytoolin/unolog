@@ -222,6 +222,18 @@ mw := std.Middleware(unolog.MustCompile(unolog.Config{
 `unolog.Add` accepts one or more key/value pairs:
 `unolog.Add(ctx, "k1", v1, "k2", v2, "k3", v3)`.
 
+Every pair of `Add` moves its value through an `any`, and a value that is
+not a compile-time constant pays a 16-byte heap box for it. The typed
+family skips the box: `unolog.AddString(ctx, "k", s)` and
+`unolog.AddInt(ctx, "k", n)` are the cheapest single-field writes, and
+`unolog.AddStrings(ctx, "k1", v1, "k2", v2)` writes any number of string
+fields under one lock. Reach for the typed calls whenever the value is a
+variable -- an id, a route template, a status code.
+
+Twelve runtime string fields, measured: `AddStrings` 157 ns and one
+allocation, twelve `AddString` calls 172 ns and one allocation, the
+boxed batch `Add(ctx, ...)` 284 ns and thirteen.
+
 `unolog.SampleInput.Method`, `Path`, and `StatusCode` are HTTP compatibility fields.
 For non-HTTP operations use `Domain`, `Operation`, `Outcome`, and `Code`.
 
@@ -267,6 +279,12 @@ func runJob(ctx context.Context, rt *unolog.Runtime) (err error) {
 	return nil
 }
 ```
+
+When the operation stays on one goroutine, `op.Add("account_id", "acct_42")`
+is the faster form of the same write: it skips both the `Context()`
+allocation and the event mutex, so a request that never hands out its
+context allocates nothing. Use one form at a time — mixing them from
+separate goroutines is not supported.
 
 `op.End(&err)` is the only completion path: one-shot, returning whether
 the event was emitted. The `worker` integration wraps this idiom for
@@ -386,8 +404,11 @@ What that means:
   than most loggers spend formatting a single line.
 - Sampling runs before any sink work, and errors/panics bypass sampling
   structurally — the cheap path can never hide a failure.
-- Twelve fields ride on one typed WAL slice: `Add` does not box per field, the
-  record is encoded once, and every sink and adapter reads that same record.
+- Twelve fields ride on one typed WAL slice: the typed `AddString` /
+  `AddInt` / `AddStrings` calls never box a value, the record is encoded
+  once, and every sink and adapter reads that same record. The plain `Add`
+  boxes each non-constant value it is handed (one 16-byte allocation per
+  field), which is why the typed calls are the recommended form.
 - Adapter rows include the bridge and host logger allocations; they are
   end-to-end totals.
 

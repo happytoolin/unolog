@@ -14,7 +14,7 @@ import (
 func TestStartAddsWorkerFields(t *testing.T) {
 	scheduledAt := time.Date(2026, 2, 10, 8, 30, 0, 0, time.UTC)
 	op := Start(context.Background(), nil, JobMeta{Name: "cleanup"}) // nil rt: valid no-op handle
-	if op == nil || op.Context() == nil {
+	if op.Context() == nil {
 		t.Fatal("expected operation handle and context")
 	}
 

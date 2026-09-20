@@ -877,3 +877,55 @@ func TestCompileConfigPropertyRandom(t *testing.T) {
 		driveOneRequest(t, rt, fmt.Sprintf("iter-%d", i), true) // error drive: deterministic
 	}
 }
+
+// clockCaptureSink copies the tagged members out during Write — a Record
+// is only valid for the call.
+type clockCaptureSink struct {
+	when      time.Time
+	duration  int64
+	haveDurMS bool
+}
+
+func (s *clockCaptureSink) Write(_ context.Context, rec *Record) {
+	s.when = rec.Time()
+	for _, f := range rec.Fields() {
+		if f.Key() == KeyDurationMS {
+			s.duration, s.haveDurMS = f.num, true
+		}
+	}
+}
+
+// TestConfigClockDrivesLifecycle pins the Config.Clock contract: both hot
+// path reads (start and completion) come from the configured clock, so
+// duration_ms and Record.Time() track it, and the default stays wall time.
+func TestConfigClockDrivesLifecycle(t *testing.T) {
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	sink := &clockCaptureSink{}
+	rt := MustCompile(Config{Sink: sink, SamplingRate: 1, Clock: func() time.Time {
+		calls++
+		return base.Add(time.Duration(calls) * time.Second)
+	}})
+
+	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "clocked"})
+	op.End(nil)
+
+	if calls != 2 {
+		t.Fatalf("clock calls = %d, want 2 (start + completion)", calls)
+	}
+	if want := base.Add(2 * time.Second); !sink.when.Equal(want) {
+		t.Errorf("Record.Time() = %v, want %v", sink.when, want)
+	}
+	if !sink.haveDurMS || sink.duration != 1000 {
+		t.Errorf("duration_ms = %d (present=%v), want 1000", sink.duration, sink.haveDurMS)
+	}
+
+	// The default clock is the wall clock: a real duration, not a constant.
+	def := &clockCaptureSink{}
+	defaultRT := MustCompile(Config{Sink: def, SamplingRate: 1})
+	clocked := Start(context.Background(), defaultRT, OperationStart{Domain: DomainJob, Name: "clocked"})
+	clocked.End(nil)
+	if !def.haveDurMS || def.when.IsZero() {
+		t.Errorf("default clock produced time=%v duration_ms_present=%v", def.when, def.haveDurMS)
+	}
+}

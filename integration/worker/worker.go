@@ -33,7 +33,7 @@ type JobMeta struct {
 //		unolog.Add(ctx, "rows", 42)
 //		...
 //	}
-func Start(ctx context.Context, rt *unolog.Runtime, meta JobMeta) *unolog.Operation {
+func Start(ctx context.Context, rt *unolog.Runtime, meta JobMeta) unolog.Operation {
 	op := unolog.Start(ctx, rt, unolog.OperationStart{
 		Domain:      unolog.DomainJob,
 		Name:        meta.Name,

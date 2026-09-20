@@ -12,15 +12,22 @@ import (
 )
 
 // StartRequest opens the request lifecycle: it attaches the WAL to the
-// request context and records the base HTTP fields. The returned
-// operation carries the enriched context (op.Context()).
-func StartRequest(baseCtx context.Context, rt *unolog.Runtime, method, path string) *unolog.Operation {
+// request context and records the base HTTP fields. It returns the
+// operation handle by value, so the middleware keeps it on its own stack,
+// plus the context node that carries the WAL to unolog.Add. Only the node
+// escapes into the request; the handle never does.
+func StartRequest(baseCtx context.Context, rt *unolog.Runtime, method, path string) (unolog.Operation, context.Context) {
 	op := unolog.Start(baseCtx, rt, unolog.OperationStart{
 		Domain: unolog.DomainHTTP,
 		Name:   "request",
 	})
-	unolog.Add(op.Context(), unolog.KeyHTTPMethod, method, unolog.KeyHTTPPath, path)
-	return op
+	ctx := op.Context()
+	// Handle writes (not unolog.Add(ctx, …)): no context lookup and no
+	// variadic []any allocation per call. Nothing else holds ctx yet, so
+	// the unguarded single-goroutine handle path is safe here.
+	op.AddString(unolog.KeyHTTPMethod, method)
+	op.AddString(unolog.KeyHTTPPath, path)
+	return op, ctx
 }
 
 // FinalizeRequest records the resolved route and status, then commits
@@ -34,28 +41,36 @@ func StartRequest(baseCtx context.Context, rt *unolog.Runtime, method, path stri
 // explicit outcome wins). The resulting wire fields are identical to
 // End's own panic handling. The non-panic error path needs no explicit
 // unolog.Error: End(&err) records it.
-func FinalizeRequest(op *unolog.Operation, route string, statusCode int, err error, recovered any) {
+func FinalizeRequest(op *unolog.Operation, ctx context.Context, route string, statusCode int, err error, recovered any) {
 	if op == nil {
 		return
 	}
 	if route != "" {
-		// One ctx lookup for all three canonical writes (v0 parity:
-		// op.name is the resolved route template, last-write-wins over
-		// StartRequest's "request").
-		unolog.Add(op.Context(), unolog.KeyHTTPRoute, route, unolog.KeyOpName, route, unolog.KeyHTTPStatus, statusCode)
+		// Handle writes, not unolog.Add(ctx, …): each ctx write pays a
+		// guarded acquisition (event mutex) that the middleware does not
+		// need. The middleware owns op and holds it on its own stack for
+		// the whole request, and finalize runs on the request goroutine
+		// after the handler returned, so no other writer can be live
+		// (mixing the handle and ctx forms from separate goroutines is
+		// unsupported). Three guarded writes cost ~46 ns; the handle
+		// form costs none. (v0 parity: op.name is the resolved route
+		// template, last-write-wins over StartRequest's "request".)
+		op.AddString(unolog.KeyHTTPRoute, route)
+		op.AddString(unolog.KeyOpName, route)
+		op.AddInt(unolog.KeyHTTPStatus, int64(statusCode))
 	} else {
-		unolog.Add(op.Context(), unolog.KeyHTTPStatus, statusCode)
+		op.AddInt(unolog.KeyHTTPStatus, int64(statusCode))
 	}
 
 	if recovered != nil {
-		unolog.Add(op.Context(), unolog.KeyPanic, PanicField(recovered))
+		unolog.Add(ctx, unolog.KeyPanic, PanicField(recovered))
 		// The real error (if any) wins over the synthetic panic one.
 		if err != nil {
-			unolog.Error(op.Context(), err)
+			unolog.Error(ctx, err)
 		} else {
-			unolog.Error(op.Context(), fmt.Errorf("panic: %v", recovered))
+			unolog.Error(ctx, fmt.Errorf("panic: %v", recovered))
 		}
-		unolog.Add(op.Context(), unolog.KeyOpOutcome, string(unolog.OutcomePanic))
+		unolog.Add(ctx, unolog.KeyOpOutcome, string(unolog.OutcomePanic))
 		_ = op.End(nil)
 		return
 	}

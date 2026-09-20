@@ -134,7 +134,10 @@ func BenchmarkAdapterSlog(b *testing.B) {
 	b.Run("write_empty", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			unolog.Start(ctx, rt, unolog.OperationStart{}).End(nil)
+			{
+				op := unolog.Start(ctx, rt, unolog.OperationStart{})
+				op.End(nil)
+			}
 		}
 	})
 }
@@ -168,7 +171,10 @@ func BenchmarkAdapterZap(b *testing.B) {
 	b.Run("write_empty", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			unolog.Start(ctx, rt, unolog.OperationStart{}).End(nil)
+			{
+				op := unolog.Start(ctx, rt, unolog.OperationStart{})
+				op.End(nil)
+			}
 		}
 	})
 }
@@ -223,7 +229,10 @@ func BenchmarkAdapterZerolog(b *testing.B) {
 	b.Run("write_empty", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			unolog.Start(ctx, rt, unolog.OperationStart{}).End(nil)
+			{
+				op := unolog.Start(ctx, rt, unolog.OperationStart{})
+				op.End(nil)
+			}
 		}
 	})
 }

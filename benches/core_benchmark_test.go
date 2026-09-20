@@ -26,7 +26,8 @@ func BenchmarkWALAddStableKeysLifecycle(b *testing.B) {
 	b.Run("no_fields", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			unolog.Start(ctx, rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"}).End(nil)
+			op := unolog.Start(ctx, rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "bench"})
+			op.End(nil)
 		}
 	})
 	b.Run("one_field", func(b *testing.B) {
@@ -98,8 +99,28 @@ func BenchmarkOperationLifecycle12Fields(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
-		benchmarkFields(op.Context(), 12)
+		benchmarkFieldsOp(&op, 12)
 		op.End(nil)
+	}
+}
+
+// benchmarkFieldsOp is benchmarkFields through the direct handle API:
+// no context lookup, so the handle stays on the caller's stack.
+func benchmarkFieldsOp(op *unolog.Operation, n int) {
+	op.Add("http.method", "GET")
+	op.Add("http.path", "/api/v1/orders/12345")
+	op.Add("http.route", "/api/v1/orders/:id")
+	op.Add("http.status", 200)
+	op.Add("op.domain", "http")
+	op.Add("op.name", "GET /api/v1/orders/:id")
+	op.Add("op.outcome", "success")
+	op.Add("op.code", 200)
+	op.Add("duration_ms", 12)
+	op.Add("request_id", "req_01HZX4T7W8Y3N2M1K0J9Z8X7V6")
+	op.Add("user_id", "usr_77451")
+	op.Add("cache.hit", true)
+	for i := 12; i < n; i++ {
+		op.Add("k"+strconv.Itoa(i), i)
 	}
 }
 
@@ -112,6 +133,21 @@ func BenchmarkOperationLifecycleSparse(b *testing.B) {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{})
 		op.End(nil)
 	}
+}
+
+// BenchmarkOperationLifecycleParallel runs the 12-field lifecycle from
+// GOMAXPROCS goroutines. It is the contention gate for any shared state
+// on the Start path (the operation slab bump counter, in particular).
+func BenchmarkOperationLifecycleParallel(b *testing.B) {
+	rt := runtimeFor()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
+			benchmarkFieldsOp(&op, 12)
+			op.End(nil)
+		}
+	})
 }
 
 // BenchmarkOperationLifecycleDropped is the §4 full-dropped-lifecycle
@@ -128,8 +164,12 @@ func BenchmarkOperationLifecycleDropped(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "cleanup"})
+				// Hoist Context(): it mints a fresh node per call by design
+				// (straggler-safe), so calling it once per field would allocate
+				// a node per field and measure the allocator, not the drop path.
+				ctx := op.Context()
 				for _, k := range keys {
-					unolog.Add(op.Context(), k, 7)
+					unolog.Add(ctx, k, 7)
 				}
 				op.End(nil)
 			}
@@ -159,7 +199,7 @@ func BenchmarkOperationLifecycleWithPolicies(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "job"})
-		benchmarkFields(op.Context(), 12)
+		benchmarkFieldsOp(&op, 12)
 		op.End(nil)
 	}
 }
