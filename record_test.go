@@ -18,13 +18,13 @@ import (
 )
 
 func recOf(level Level, msg string, fields ...Field) *Record {
-	return &Record{level: level, msg: msg, fields: fields, completedAt: time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local)}
+	return &Record{level: level, msg: msg, fields: fields, completedAt: time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local).UnixNano()}
 }
 
 func TestRecordTimeAccessor(t *testing.T) {
 	at := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	r := recOf(LevelInfo, "m", fieldStr("k", "v"))
-	r.completedAt = at
+	r.completedAt = at.UnixNano()
 	if got := r.Time(); !got.Equal(at) {
 		t.Fatalf("Time() = %v, want %v", got, at)
 	}
@@ -144,12 +144,12 @@ func TestDedupeCrossover(t *testing.T) {
 }
 
 func TestRecordEncodedShape(t *testing.T) {
-	now := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local)
 	r := &Record{
 		level:       LevelError,
 		msg:         "job failed",
 		fields:      []Field{fieldOf("op.code", 500), fieldOf("dur", 1500*time.Millisecond)},
-		completedAt: now,
+		completedAt: now.UnixNano(),
 	}
 	line := r.Encoded()
 	if !bytes.HasSuffix(line, []byte("}\n")) {
@@ -165,7 +165,10 @@ func TestRecordEncodedShape(t *testing.T) {
 	if payload["message"] != "job failed" {
 		t.Fatalf("message = %v", payload["message"])
 	}
-	if ts, ok := payload["time"].(string); !ok || ts != "2026-09-01T10:00:00Z" {
+	// The record carries an instant; Time() re-materializes it in the
+	// local zone, so the wire string is the local rendering of the
+	// instant (the zone the default clock and the RFC3339 cache use).
+	if ts, ok := payload["time"].(string); !ok || ts != now.Format(time.RFC3339) {
 		t.Fatalf("time = %v", payload["time"])
 	}
 	if payload["dur"] != 1500.0 { // float ms
@@ -240,7 +243,7 @@ func TestCanonicalCollisionRename(t *testing.T) {
 			}
 			wantCanonical := map[string]string{
 				"message": "m",
-				"time":    r.completedAt.Format(time.RFC3339), // recOf's fixed clock
+				"time":    r.Time().Format(time.RFC3339), // recOf's fixed clock
 				"level":   "info",
 			}[c.userKey]
 			if raw := memberValue(t, line, c.userKey); raw == nil || string(raw) != `"`+wantCanonical+`"` {
@@ -348,7 +351,7 @@ func capturedLine(t *testing.T, ev CapturedEvent) []byte {
 	t.Helper()
 	r := &Record{
 		level: ev.Level(), msg: ev.Message(), fields: ev.Fields(),
-		completedAt: time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local),
+		completedAt: time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local).UnixNano(),
 	}
 	return r.Encoded()
 }
@@ -439,7 +442,7 @@ func TestRecordEncodeAllocWidePath(t *testing.T) {
 // loudly.
 func TestRecordEncodeAllocFreshRecord(t *testing.T) {
 	fields := allocFields(20)
-	completedAt := time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local)
+	completedAt := time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local).UnixNano()
 	encode := func() {
 		r := &Record{level: LevelInfo, msg: "m", fields: fields, completedAt: completedAt}
 		_ = r.Encoded()
@@ -840,5 +843,42 @@ func TestDedupeFieldsProperty(t *testing.T) {
 	// random extra sweeps
 	for range 500 {
 		check(rng.IntN(81), 1+rng.IntN(8))
+	}
+}
+
+// TestFieldTimeRoundTrip pins the time union slot: a time.Time must
+// survive pack/unpack word-for-word, because KindTime rides num/pay now
+// instead of its own field. Formats alone would hide a lost monotonic
+// reading or a dropped zone (both mutate Equal/Sub), so compare the raw
+// struct words and every observable accessor.
+func TestFieldTimeRoundTrip(t *testing.T) {
+	zones := []*time.Location{time.UTC, time.Local, time.FixedZone("IST", 5*3600+1800)}
+	times := make([]time.Time, 0, len(zones)+2)
+	for _, zone := range zones {
+		times = append(times, time.Date(2026, 9, 1, 15, 30, 0, 123456789, zone))
+	}
+	times = append(times, time.Now(), time.Time{})
+
+	for _, want := range times {
+		f := fieldOf("at", want)
+		if f.kind != KindTime {
+			t.Fatalf("fieldOf(time) kind = %v, want KindTime", f.kind)
+		}
+		got := f.timeValue()
+		// Every time.Time field is word-comparable, so == is the raw
+		// struct comparison: a lost monotonic reading or zone fails it.
+		if got != want {
+			t.Errorf("timeValue(%v) = %v, want %v", want, got, want)
+		}
+		got, ok := f.Time()
+		if !ok {
+			t.Fatalf("Time() ok = false for %v", want)
+		}
+		if !got.Equal(want) || got.Location() != want.Location() || got.Nanosecond() != want.Nanosecond() {
+			t.Errorf("Time() = %v (%v), want %v (%v)", got, got.Location(), want, want.Location())
+		}
+		if v, ok := valueOf(f).(time.Time); !ok || !v.Equal(want) {
+			t.Errorf("valueOf(time) = %v (%T), want %v", v, v, want)
+		}
 	}
 }

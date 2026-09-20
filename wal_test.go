@@ -191,22 +191,48 @@ func TestWALSetters(t *testing.T) {
 func TestWALStartedAt(t *testing.T) {
 	before := time.Now()
 	ev := newEvent()
-	if ev.startedAt.Before(before.Add(-time.Second)) || ev.startedAt.After(time.Now().Add(time.Second)) {
-		t.Fatalf("startedAt = %v, outside window", ev.startedAt)
+	got := time.Unix(0, ev.startWall)
+	if got.Before(before.Add(-time.Second)) || got.After(time.Now().Add(time.Second)) {
+		t.Fatalf("startedAt = %v, outside window", got)
 	}
 }
 
+// TestWALResetReleasesFieldReferences pins what recycling guarantees after
+// resetAt stopped scrubbing the backing array. The old contract — every
+// slot of a recycled event is fully zeroed — is gone with the clear that
+// cost ~7% of a kept lifecycle; the slots it zeroed were unreachable
+// anyway. What remains is the invariant the fill sites must uphold: a slot
+// a reader can reach (inside len(fields)) always carries THIS generation's
+// key, and a scalar-kinded slot carries no payload pointer, so it can
+// neither surface the previous request's value nor retain it past the next
+// GC sweep of the pool.
 func TestWALResetReleasesFieldReferences(t *testing.T) {
 	ev := &event{fields: make([]Field, 16)}
 	for i := range ev.fields {
 		ev.fields[i] = fieldOf("payload", make([]byte, 1024))
 	}
-	previous := ev.fields
 	ev.reset()
+	// The int branch of fillField runs on a slot that still holds a []byte
+	// reference: it must release that pointer.
+	ev.append(genOf(ev), fieldOf("count", 7))
 	ev.append(genOf(ev), fieldStr("short", "next request"))
-	for i, f := range previous[1:] {
-		if f.kind != KindInvalid || f.key != "" || f.str != "" || f.val != nil {
-			t.Fatalf("unused slot %d retained the previous request", i+1)
+	if len(ev.fields) != 2 {
+		t.Fatalf("live prefix = %d fields, want 2", len(ev.fields))
+	}
+	if got := ev.fields[0]; got.key != "count" || got.kind != KindInt || got.num != 7 {
+		t.Fatalf("slot 0 = {key:%q kind:%v num:%d}, want the int field of this generation", got.key, got.kind, got.num)
+	}
+	for i, f := range ev.fields {
+		switch f.kind {
+		case KindString, KindErr, KindAny:
+			// Pointer-bearing by design.
+		default:
+			if f.pay.data != nil {
+				t.Fatalf("slot %d (%v, kind %v) kept a payload pointer from the previous request", i, f.key, f.kind)
+			}
+		}
+		if f.key != "count" && f.key != "short" {
+			t.Fatalf("slot %d key = %q, not a key written this generation", i, f.key)
 		}
 	}
 }
@@ -630,7 +656,7 @@ func TestPoolReuseCanary(t *testing.T) {
 	ctx1 := op1.Context()
 	Add(ctx1, "payload", "request-one")
 	op1.End(nil)
-	ev1 := op1.ev
+	ev1 := op1.ref.ev
 
 	// Chase the recycled event across requests. GC off keeps the pool
 	// hot, but the race runtime still drops a share of sync.Pool Puts
@@ -653,7 +679,7 @@ func TestPoolReuseCanary(t *testing.T) {
 		canaryWrite(ctx1) // live window: stale gen must fail every entry point
 		op.End(nil)
 		canaryWrite(ctx1) // pooled window: stale gen must fail after release too
-		recycled = op.ev == ev1
+		recycled = op.ref.ev == ev1
 	}
 	canaryWrite(ctx2) // last request's context is stale after its End as well
 
@@ -1533,36 +1559,39 @@ func (s *matrixSink) Write(_ context.Context, rec *Record) {
 // releases the event when it wants the pool phases.
 func stagedEnd(op *Operation, fireAt matrixPhase, fire func(ctx context.Context)) {
 	now := time.Now()
-	duration := now.Sub(op.ev.startedAt)
+	duration := time.Duration(now.UnixNano() - op.ref.ev.startWall)
 
 	if fireAt == phasePreAnnotate {
 		fire(op.Context())
 	}
-	annotateOperationFailures(op.ev, &op.ref, nil, nil)
+	annotateOperationFailures(op.ref.ev, &op.ref, nil, nil)
 	if fireAt == phasePreSeal {
 		fire(op.Context())
 	}
-	op.ev.seal()
-	if fireAt == phasePreScan {
+	// End seals, scans, and annotates under ONE acquisition of the
+	// append mutex, so the staged mirror takes it here too — a straggler
+	// fired at phasePreScan or phasePrePostSeal therefore has to wait for
+	// the lock (it drops on the sealed state), which is the real End's
+	// behaviour.
+	var in commitInput
+	in.duration = duration
+	in.completedAt = now.UnixNano()
+	op.ref.ev.mu.Lock()
+	op.ref.ev.state.Or(uint64(walSealed))
+	scanWAL(&in.scan, op.ref.ev, true)
+	outcome := resolveOutcome(false, "", in.scan.code, in.scan.outcome)
+	in.outcome = outcome
+	op.annotatePostSeal(&in)
+	op.ref.ev.mu.Unlock()
+	// The old pre-scan, pre-postseal, and pre-commit fire points marked
+	// the gaps between seal, scan, and annotation. End holds the append
+	// mutex across all three now, so a straggler fired at any of them
+	// only waits for the lock and then drops on the sealed state — fire
+	// them here, after the release, where waiting is impossible.
+	if fireAt == phasePreScan || fireAt == phasePrePostSeal || fireAt == phasePreCommit {
 		fire(op.Context())
 	}
-	scan := scanWAL(op.ev)
-	code := scan.code
-	outcome := resolveOutcome(nil, nil, code, scan.outcome)
-	if fireAt == phasePrePostSeal {
-		fire(op.Context())
-	}
-	// Final annotations are now part of commit, after built-in sampling.
-	if fireAt == phasePreCommit {
-		fire(op.Context())
-	}
-	op.commit(&commitInput{
-		outcome:  outcome,
-		code:     code,
-		duration: duration,
-		now:      now,
-		scan:     scan,
-	})
+	op.commit(&in)
 }
 
 // TestStragglerInjectionMatrix drives every phase
@@ -1602,7 +1631,7 @@ func TestStragglerInjectionMatrix(t *testing.T) {
 			// after the straggler fires: pre-seal phases must still be
 			// active, post-seal phases must be sealed.
 			checkState := func(wantActive bool) {
-				state := walState(op.ev.state.Load() & walStateMask)
+				state := walState(op.ref.ev.state.Load() & walStateMask)
 				if wantActive {
 					if state != walActive {
 						t.Fatalf("phase %v: state %v, want active", phase, state)
@@ -1620,29 +1649,29 @@ func TestStragglerInjectionMatrix(t *testing.T) {
 			case phaseInWrite:
 				// The sink fires inside commit's emit: post-seal.
 				sink.fire = func() { fire(ctx) }
-				stagedEnd(op, -1, fire)
+				stagedEnd(&op, -1, fire)
 			case phasePostCommitPreRelease:
-				stagedEnd(op, -1, fire)
+				stagedEnd(&op, -1, fire)
 				fire(ctx)
-				op.ev.release()
+				op.ref.ev.release()
 			case phasePostRelease:
-				stagedEnd(op, -1, fire)
-				op.ev.release()
+				stagedEnd(&op, -1, fire)
+				op.ref.ev.release()
 				fire(ctx)
 			case phasePostRecycle:
-				stagedEnd(op, -1, fire)
-				op.ev.release()
+				stagedEnd(&op, -1, fire)
+				op.ref.ev.release()
 				op2 := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "two"})
 				Add(op2.Context(), "own", "field")
 				op2.End(nil)
 				fire(ctx) // stale writes must drop everywhere
 			default:
-				stagedEnd(op, phase, fire)
+				stagedEnd(&op, phase, fire)
 			}
 
 			// After the full staged End the event is sealed in every
 			// mode.
-			state := walState(op.ev.state.Load() & walStateMask)
+			state := walState(op.ref.ev.state.Load() & walStateMask)
 			if state != walSealed {
 				t.Fatalf("phase %v: final state %v, want sealed", phase, state)
 			}
@@ -1824,10 +1853,10 @@ func TestStragglerSealedErrorNoLatch(t *testing.T) {
 			rt := MustCompile(Config{Sink: sink, SamplingRate: 0}) // healthy drops
 			op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "latch"})
 			ctx := op.Context()
-			stagedEnd(op, phase, func(context.Context) {
+			stagedEnd(&op, phase, func(context.Context) {
 				Error(ctx, errors.New("s-error"))
 			})
-			if op.ev.hasErr {
+			if op.ref.ev.hasErr {
 				t.Fatalf("phase %v: hasErr latched by a sealed-phase straggler", phase)
 			}
 			if len(sink.capture) != 0 {

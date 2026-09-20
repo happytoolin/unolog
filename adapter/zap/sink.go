@@ -5,12 +5,34 @@ package zap
 
 import (
 	"context"
+	"sync"
 
 	"github.com/happytoolin/unolog"
 	"github.com/happytoolin/unolog/wire"
 	gozap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+const (
+	zapFieldPoolCapacity    = 32
+	zapFieldPoolMaxCapacity = 160
+)
+
+var zapFieldPool = sync.Pool{
+	New: func() any {
+		buf := make([]gozap.Field, 0, zapFieldPoolCapacity)
+		return &buf
+	},
+}
+
+func recycleZapFields(bufPtr *[]gozap.Field, buf []gozap.Field) {
+	if cap(buf) > zapFieldPoolMaxCapacity {
+		return
+	}
+	clear(buf) // gozap.Field carries an any: do not retain a record's values
+	*bufPtr = buf[:0]
+	zapFieldPool.Put(bufPtr)
+}
 
 // Sink writes unolog records to the zap logger.
 type Sink struct {
@@ -39,8 +61,11 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 		return
 	}
 
-	zapFields := make([]gozap.Field, 0, len(fields))
-	for _, i := range wire.LastIndices(fields, unolog.Field.Key) {
+	bufPtr := zapFieldPool.Get().(*[]gozap.Field) //nolint:forcetypeassert // the pool's New stores exactly *[]gozap.Field
+	zapFields := (*bufPtr)[:0]
+	defer func() { recycleZapFields(bufPtr, zapFields) }()
+	var indexStorage [wire.NarrowLimit]int
+	for _, i := range rec.AppendLastIndices(indexStorage[:0]) {
 		zapFields = append(zapFields, fieldOf(fields[i]))
 	}
 	checked.Write(zapFields...)

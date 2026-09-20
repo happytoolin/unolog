@@ -75,7 +75,7 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 
 	fields := rec.Fields()
 	var indexStorage [wire.NarrowLimit]int
-	for _, i := range wire.AppendLastIndices(indexStorage[:0], fields, unolog.Field.WireKey) {
+	for _, i := range rec.AppendLastWireIndices(indexStorage[:0]) {
 		event = appendField(event, fields[i])
 	}
 	// New stamps the record completion time. NewWithLoggerTimestamp lets a

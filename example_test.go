@@ -58,7 +58,8 @@ func ExampleCompile() {
 		fmt.Println("bad config:", err)
 		return
 	}
-	unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "j"}).End(nil)
+	op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "j"})
+	op.End(nil)
 	// Output:
 	// unolog: sampling rate 1.5: invalid rate
 	// true

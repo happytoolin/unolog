@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 )
 
 // Compile-time error contract: Compile returns errors wrapping these
@@ -48,6 +49,23 @@ type Config struct {
 	// Message is the default final message, overriding the per-domain
 	// defaults (request_completed / operation_completed).
 	Message string
+
+	// Clock optionally supplies every timestamp the hot path reads: the
+	// operation's start, its completion stamp, and the duration between
+	// them. Nil uses the built-in clock: a direct arm64 counter read (or
+	// the runtime's monotonic clock elsewhere) plus a wall anchor
+	// refreshed at most once per 100 ms, so the hot path makes no
+	// wall-clock syscall. A coarse clock (a value refreshed off the hot
+	// path, e.g. by a shared ticker the caller owns) turns each read into
+	// an atomic load. The trade-off is
+	// resolution, not correctness: duration_ms and Record.Time() quantize
+	// to the clock's tick, while the wire stamp stays RFC 3339
+	// (second precision) — so keep the tick well under a second unless
+	// sub-second duration_ms matters to the sampler.
+	//
+	// A supplied clock must return non-decreasing times for the runtime's
+	// lifetime. It is called on the request goroutine; do not block.
+	Clock func() time.Time
 }
 
 // Runtime is the immutable, compiled form of Config, shared by all
@@ -59,6 +77,7 @@ type Runtime struct {
 	levelRates map[Level]float64
 	policies   map[Domain]OperationPolicy
 	message    string
+	clock      func() time.Time
 
 	// alwaysKeep is the compiled keep-everything fast path: rate
 	// exactly 1.0 with no sampler, per-level rates, or policies means
@@ -77,6 +96,7 @@ func Compile(cfg Config) (*Runtime, error) {
 		sampler: cfg.Sampler,
 		message: cfg.Message,
 		rate:    cfg.SamplingRate,
+		clock:   cfg.Clock,
 	}
 
 	if !(rt.rate >= 0 && rt.rate <= 1) {
@@ -180,8 +200,12 @@ func copyPolicy(policy OperationPolicy) OperationPolicy {
 // domain policy. Zero fields mean the defaults; every other value was
 // validated by Compile, so no re-validation is needed here.
 func levelFromPolicy(policy OperationPolicy, outcome Outcome) Level {
-	if outcomeLevel, ok := policy.OutcomeLevels[outcome]; ok {
-		return outcomeLevel
+	// The zero policy (default config) has a nil OutcomeLevels, so the
+	// common path pays one pointer compare instead of a map probe.
+	if policy.OutcomeLevels != nil {
+		if outcomeLevel, ok := policy.OutcomeLevels[outcome]; ok {
+			return outcomeLevel
+		}
 	}
 
 	// Zero policy fields mean the defaults; the zero Level is Info,
@@ -209,6 +233,18 @@ func levelFromPolicy(policy OperationPolicy, outcome Outcome) Level {
 
 // noop reports whether the runtime can never emit (nil sink).
 func (rt *Runtime) noop() bool { return rt == nil || rt.sink == nil }
+
+// clockOf returns the configured clock, or nil for the wall clock. It
+// stays call-free, so it inlines into wherever the clock is read and
+// the default path keeps a direct time.Now: a wrapper holding both
+// calls never fits the inline budget, and that extra frame on every
+// operation costs more than the clock it saves.
+func (rt *Runtime) clockOf() func() time.Time {
+	if rt == nil {
+		return nil
+	}
+	return rt.clock
+}
 
 // normalizeDomain maps the zero Domain to the default "operation"
 // domain; every other value passes through unchanged.

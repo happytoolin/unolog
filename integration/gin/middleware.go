@@ -19,8 +19,8 @@ func Middleware(rt *unolog.Runtime) gogin.HandlerFunc {
 	}
 
 	return func(c *gogin.Context) {
-		op := flow.StartRequest(c.Request.Context(), rt, c.Request.Method, c.Request.URL.Path)
-		c.Request = c.Request.WithContext(op.Context())
+		op, ctx := flow.StartRequest(c.Request.Context(), rt, c.Request.Method, c.Request.URL.Path)
+		flow.AttachRequestContext(c.Request, ctx)
 
 		defer func() {
 			recovered := recover()
@@ -36,7 +36,7 @@ func Middleware(rt *unolog.Runtime) gogin.HandlerFunc {
 				Recovered:       recovered,
 				ResponseStarted: c.Writer.Written(),
 			})
-			flow.FinalizeRequest(op, c.FullPath(), status, err, recovered)
+			flow.FinalizeRequest(&op, ctx, c.FullPath(), status, err, recovered)
 
 			if recovered != nil {
 				panic(recovered)

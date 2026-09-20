@@ -95,7 +95,7 @@ func copyFields(fields []Field) []Field {
 	for i, f := range fields {
 		switch f.kind {
 		case KindAny, KindErr:
-			out[i] = Field{key: f.key, kind: f.kind, val: deepCopyValue(f.val, newVisitSet())}
+			out[i] = Field{key: f.key, kind: f.kind, pay: packAny(deepCopyValue(f.pay.anyValue(), newVisitSet()))}
 		default:
 			out[i] = f
 		}

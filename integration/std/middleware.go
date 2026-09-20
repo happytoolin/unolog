@@ -29,9 +29,9 @@ func Middleware(rt *unolog.Runtime) func(http.Handler) http.Handler {
 				return
 			}
 
-			op := flow.StartRequest(r.Context(), rt, r.Method, r.URL.Path)
+			op, ctx := flow.StartRequest(r.Context(), rt, r.Method, r.URL.Path)
 
-			req := r.WithContext(op.Context())
+			req := flow.AttachRequestContext(r, ctx)
 			core := getTracker(w)
 			ww := promoteOptional(w, core)
 
@@ -47,7 +47,7 @@ func Middleware(rt *unolog.Runtime) func(http.Handler) http.Handler {
 					Recovered:       recovered,
 					ResponseStarted: wroteHeader,
 				})
-				flow.FinalizeRequest(op, req.Pattern, status, nil, recovered)
+				flow.FinalizeRequest(&op, ctx, req.Pattern, status, nil, recovered)
 
 				if recovered != nil {
 					panic(recovered)

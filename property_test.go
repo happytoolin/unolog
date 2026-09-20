@@ -242,7 +242,7 @@ func TestRecordEncodeDeterminismProperty(t *testing.T) {
 			kind := FieldKind(1 + rng.IntN(11))
 			fields[j] = fieldOf(fmt.Sprintf("k%d", j%7), rtFieldValue(rng, kind))
 		}
-		completedAt := time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local)
+		completedAt := time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local).UnixNano()
 		build := func() []byte {
 			r := &Record{level: LevelInfo, msg: "m", fields: fields, completedAt: completedAt}
 			return r.Encoded()
@@ -456,16 +456,16 @@ func TestEncodedRoundTripProperty(t *testing.T) {
 				if err := json.Unmarshal(raw, &s); err != nil {
 					t.Fatalf("i=%d %q: %v", i, k, err)
 				}
-				if utf8.ValidString(wf.str) && s != wf.str {
-					t.Fatalf("i=%d %q: string round-trip %q != %q", i, k, s, wf.str)
+				if utf8.ValidString(rawStr(wf)) && s != rawStr(wf) {
+					t.Fatalf("i=%d %q: string round-trip %q != %q", i, k, s, rawStr(wf))
 				}
 			case KindInt:
 				if err := json.Unmarshal(raw, &num); err != nil || num != wf.num {
 					t.Fatalf("i=%d %q: int round-trip %d != %d (%s)", i, k, num, wf.num, raw)
 				}
 			case KindFloat:
-				if err := json.Unmarshal(raw, &fnum); err != nil || fnum != wf.f {
-					t.Fatalf("i=%d %q: float round-trip %v != %v", i, k, fnum, wf.f)
+				if err := json.Unmarshal(raw, &fnum); err != nil || fnum != rawFloat(wf) {
+					t.Fatalf("i=%d %q: float round-trip %v != %v", i, k, fnum, rawFloat(wf))
 				}
 			case KindDuration:
 				var ms float64
@@ -645,7 +645,7 @@ func TestSamplingErrorBypassProperty(t *testing.T) {
 		sink := &lifeSink{}
 		rt := MustCompile(Config{Sink: sink, SamplingRate: 0, Sampler: NeverSampler()})
 		op := Start(context.Background(), rt, OperationStart{Domain: prog.start, Name: "n"})
-		executeProgramOn(prog, op)
+		executeProgramOn(prog, &op)
 		got := len(sink.events)
 		want := 0
 		if m.emitted(outcome) {
@@ -667,7 +667,7 @@ func TestSamplingRateBoundaryProperty(t *testing.T) {
 		sink := &lifeSink{}
 		rt := MustCompile(Config{Sink: sink, SamplingRate: rate})
 		op := Start(context.Background(), rt, OperationStart{Domain: prog.start, Name: "n"})
-		executeProgramOn(prog, op)
+		executeProgramOn(prog, &op)
 		return len(sink.events)
 	}
 	for i := range 1500 {
@@ -841,7 +841,7 @@ func TestPoolSafetyReplayProperty(t *testing.T) {
 		sink1 := &lifeSink{}
 		rt1 := MustCompile(Config{Sink: sink1, SamplingRate: 1})
 		op1 := Start(context.Background(), rt1, OperationStart{Domain: prog.start, Name: "one"})
-		executeProgramOn(prog, op1) // ctx1 := op1.Context() is the stale handle replayed below
+		executeProgramOn(prog, &op1) // ctx1 := op1.Context() is the stale handle replayed below
 		if len(sink1.events) != 1 {
 			continue // dropped or never-ended: nothing to protect
 		}
@@ -857,14 +857,14 @@ func TestPoolSafetyReplayProperty(t *testing.T) {
 			t.Fatalf("iter %d: request 2 emitted %d events", i, len(sink2.events))
 		}
 		secondCapture := sink2.events[0]
-		ev2 := op2.ev
+		ev2 := op2.ref.ev
 		before2 := snapshotState(ev2)
 
 		// Replay every prefix of the first program through the stale
 		// context, including the empty prefix and the full program.
 		for k := 0; k <= len(prog.ops); k++ {
 			prefix := lifeProgram{mode: prog.mode, start: prog.start, ops: prog.ops[:k]}
-			executeProgramOn(prefix, op1) // stale ctx writes: must all no-op
+			executeProgramOn(prefix, &op1) // stale ctx writes: must all no-op
 		}
 
 		if !statesEqual(snapshotState(ev2), before2) {
@@ -1214,7 +1214,7 @@ func executeProgram(prog lifeProgram) *lifeSink {
 		rt = MustCompile(Config{Sink: sink, SamplingRate: 1})
 	}
 	op := Start(context.Background(), rt, OperationStart{Domain: prog.start, Name: "n"})
-	executeProgramOn(prog, op)
+	executeProgramOn(prog, &op)
 	return sink
 }
 
@@ -1332,7 +1332,7 @@ func buildModel(prog lifeProgram) *lifeModel {
 			}
 		case opErr:
 			m.errOp = true
-			m.append(Field{key: "error", kind: KindAny, val: modelErrorField(mustValue[error](o.val))})
+			m.append(Field{key: "error", kind: KindAny, pay: packAny(modelErrorField(mustValue[error](o.val)))})
 		case opSetMsg:
 			if msg := mustValue[string](o.val); msg != "" {
 				m.msg = msg
@@ -1393,7 +1393,7 @@ func (m *lifeModel) scan() (outcome Outcome, hasOutcome bool, code int, hasCode 
 		switch f.key {
 		case "op.outcome":
 			if !hasOutcome && f.kind == KindString {
-				if o := Outcome(f.str); IsValidOutcome(o) {
+				if o := Outcome(rawStr(f)); IsValidOutcome(o) {
 					outcome = o
 					hasOutcome = true
 				}
@@ -1506,12 +1506,12 @@ func (m *lifeModel) emitted(outcome Outcome) bool {
 // wire it still precedes the completion fields.
 func (m *lifeModel) endAnnotations() {
 	if m.endPanicked {
-		m.append(Field{key: "panic", kind: KindAny, val: modelPanicField(m.endPayload)})
+		m.append(Field{key: "panic", kind: KindAny, pay: packAny(modelPanicField(m.endPayload))})
 	}
 	if m.endErr != nil {
-		m.append(Field{key: "error", kind: KindAny, val: modelErrorField(m.endErr)})
+		m.append(Field{key: "error", kind: KindAny, pay: packAny(modelErrorField(m.endErr))})
 	} else if m.endPanicked {
-		m.append(Field{key: "error", kind: KindAny, val: modelErrorField(fmt.Errorf("panic: %v", m.endPayload))})
+		m.append(Field{key: "error", kind: KindAny, pay: packAny(modelErrorField(fmt.Errorf("panic: %v", m.endPayload)))})
 	}
 	if !m.wrote("op.domain") {
 		m.append(fieldStr("op.domain", string(normalizeDomain(m.start))))
@@ -1574,8 +1574,8 @@ func checkFieldWire(f Field, raw []byte) error {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("string member %q is not a JSON string: %w (raw %s)", f.key, err, raw)
 		}
-		if utf8.ValidString(f.str) && s != f.str {
-			return fmt.Errorf("string %q: wire %q != modeled %q", f.key, s, f.str)
+		if utf8.ValidString(rawStr(f)) && s != rawStr(f) {
+			return fmt.Errorf("string %q: wire %q != modeled %q", f.key, s, rawStr(f))
 		}
 		return nil
 	case KindInt:
@@ -1601,8 +1601,8 @@ func checkFieldWire(f Field, raw []byte) error {
 		if err != nil {
 			return fmt.Errorf("float member %q: %w (raw %s)", f.key, err, raw)
 		}
-		if v != f.f {
-			return fmt.Errorf("float %q: wire %v != %v", f.key, v, f.f)
+		if v != rawFloat(f) {
+			return fmt.Errorf("float %q: wire %v != %v", f.key, v, rawFloat(f))
 		}
 		return nil
 	case KindFloat32:
@@ -1610,18 +1610,18 @@ func checkFieldWire(f Field, raw []byte) error {
 		if err != nil {
 			return fmt.Errorf("float32 member %q: %w (raw %s)", f.key, err, raw)
 		}
-		if float32(v) != float32(f.f) {
-			return fmt.Errorf("float32 %q: wire %v != %v", f.key, float32(v), float32(f.f))
+		if float32(v) != float32(rawFloat(f)) {
+			return fmt.Errorf("float32 %q: wire %v != %v", f.key, float32(v), float32(rawFloat(f)))
 		}
 		return nil
 	case KindBool:
 		switch string(raw) {
 		case "true":
-			if !f.b {
+			if !rawBool(f) {
 				return fmt.Errorf("bool %q: wire true != modeled false", f.key)
 			}
 		case "false":
-			if f.b {
+			if rawBool(f) {
 				return fmt.Errorf("bool %q: wire false != modeled true", f.key)
 			}
 		default:
@@ -1633,7 +1633,7 @@ func checkFieldWire(f Field, raw []byte) error {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("time member %q is not a string: %w", f.key, err)
 		}
-		if want := f.t.Format(time.RFC3339); s != want {
+		if want := f.timeValue().Format(time.RFC3339); s != want {
 			return fmt.Errorf("time %q: wire %q != %q", f.key, s, want)
 		}
 		return nil
@@ -1651,9 +1651,9 @@ func checkFieldWire(f Field, raw []byte) error {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("err member %q is not a string: %w", f.key, err)
 		}
-		wantErr, ok := f.val.(error)
+		wantErr, ok := rawAny(f).(error)
 		if !ok {
-			return fmt.Errorf("err member %q: value is %T, not an error", f.key, f.val)
+			return fmt.Errorf("err member %q: value is %T, not an error", f.key, rawAny(f))
 		}
 		if want := wantErr.Error(); s != want {
 			return fmt.Errorf("err %q: wire %q != %q", f.key, s, want)
@@ -1661,7 +1661,7 @@ func checkFieldWire(f Field, raw []byte) error {
 		return nil
 	case KindAny:
 		var modelV, wireV any
-		modelBytes, err := json.Marshal(f.val)
+		modelBytes, err := json.Marshal(rawAny(f))
 		if err != nil {
 			return fmt.Errorf("any member %q: modeled value not marshalable: %w", f.key, err)
 		}
@@ -1824,14 +1824,14 @@ func verifyLifecycle(t *testing.T, prog lifeProgram, got *lifeSink) {
 
 	// Modeled wire members: the envelope level, the LWW fold of the
 	// modeled WAL, then the resolved message.
-	want := []Field{{key: "level", kind: KindString, str: wireLevel(m.resolveLevel(outcome))}}
+	want := []Field{{key: "level", kind: KindString, pay: packString(wireLevel(m.resolveLevel(outcome)))}}
 	for _, f := range foldLastWrites(m.appends) {
 		if f.key == "duration_ms" {
 			continue
 		}
 		want = append(want, f)
 	}
-	want = append(want, Field{key: "message", kind: KindString, str: m.message()})
+	want = append(want, Field{key: "message", kind: KindString, pay: packString(m.message())})
 
 	if len(wire) != len(want) {
 		t.Fatalf("wire member count = %d, want %d\ngot  %v\nwant %v",
@@ -2283,5 +2283,12 @@ func keyByte(k string) byte {
 // fieldAny constructs a KindAny field (test-only; production uses
 // event.appendAny for the canonical structured maps).
 func fieldAny(key string, value any) Field {
-	return Field{key: key, kind: KindAny, val: value}
+	return Field{key: key, kind: KindAny, pay: packAny(value)}
 }
+
+// Raw union-slot readers for the white-box wire checks (see field.go).
+// Each assumes the caller already matched on f.kind.
+func rawStr(f Field) string    { return f.pay.stringValue() }
+func rawFloat(f Field) float64 { return math.Float64frombits(uint64(f.num)) }
+func rawBool(f Field) bool     { return f.num != 0 }
+func rawAny(f Field) any       { return f.pay.anyValue() }

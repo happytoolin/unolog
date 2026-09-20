@@ -863,7 +863,7 @@ func capturePanicEvent(t *testing.T, run func(op *Operation)) (lifeCapture, any)
 	var rePanicked any
 	func() {
 		defer func() { rePanicked = recover() }()
-		run(op)
+		run(&op)
 	}()
 	if len(sink.events) != 1 {
 		t.Fatalf("captured %d events, want 1", len(sink.events))
@@ -1259,5 +1259,43 @@ func TestAddSkipsEmptyKeysUniformly(t *testing.T) {
 	}
 	if v, _ := events[0].Lookup("also"); v != int64(4) {
 		t.Fatalf("also = %v, want 4", v)
+	}
+}
+
+// TestOperationAddHandlePath pins the unguarded handle path: op.Add
+// writes reach the same event as the context form (both the single and
+// the variadic shape), and after End the generation check drops the
+// write instead of landing in a recycled buffer.
+func TestOperationAddHandlePath(t *testing.T) {
+	rt, ts := testRT(t, nil)
+	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "j"})
+	op.Add("a", 1)
+	op.AddMany("b", 2, "c", 3)
+	Add(op.Context(), "d", 4)
+	if !op.End(nil) {
+		t.Fatal("event not emitted")
+	}
+	events := ts.Events()
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	for k, want := range map[string]any{"a": int64(1), "b": int64(2), "c": int64(3), "d": int64(4)} {
+		if v, _ := events[0].Lookup(k); v != want {
+			t.Fatalf("%s = %#v, want %#v", k, v, want)
+		}
+	}
+	// A handle write after End must drop even once the pool has handed
+	// the same buffer to a new request.
+	op.Add("late", 9)
+	for range 4 {
+		next := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "j"})
+		next.Add("only", 1)
+		op.Add("late", 9)
+		next.End(nil)
+	}
+	for _, ev := range ts.Events()[1:] {
+		if _, ok := ev.Lookup("late"); ok {
+			t.Fatal("a post-End handle write landed in a recycled event")
+		}
 	}
 }

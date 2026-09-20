@@ -21,8 +21,8 @@ func Middleware(rt *unolog.Runtime) gofiber.Handler {
 	}
 
 	return func(c *gofiber.Ctx) (err error) {
-		op := flow.StartRequest(c.UserContext(), rt, c.Method(), c.Path())
-		c.SetUserContext(op.Context())
+		op, ctx := flow.StartRequest(c.UserContext(), rt, c.Method(), c.Path())
+		c.SetUserContext(ctx)
 		var finalizeErr error
 
 		defer func() {
@@ -48,7 +48,7 @@ func Middleware(rt *unolog.Runtime) gofiber.Handler {
 				ResponseStarted: responseStarted,
 				ErrorStatus:     statusFromFiberError(finalizeErr),
 			})
-			flow.FinalizeRequest(op, routePath, status, finalizeErr, recovered)
+			flow.FinalizeRequest(&op, ctx, routePath, status, finalizeErr, recovered)
 
 			if recovered != nil {
 				panic(recovered)
