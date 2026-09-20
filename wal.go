@@ -145,7 +145,7 @@ func (e *event) resetAt(startWall int64) {
 	// is still single (the old Add+Store pair was two).
 	for {
 		cur := e.state.Load()
-		if e.state.CompareAndSwap(cur, cur+walGenOne-uint64(cur&walStateMask)) {
+		if e.state.CompareAndSwap(cur, cur+walGenOne-(cur&walStateMask)) {
 			break
 		}
 	}

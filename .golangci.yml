@@ -114,3 +114,13 @@ linters:
         linters:
           - modernize
         text: rangeint
+      # G103 ("audit unsafe") fires on every deliberate unsafe use in
+      # three places: the union Field layout (field.go), the SWAR string
+      # scan (internal/json/string.go), and the in-place request-context
+      # write (integration/flow/reqctx.go). Those sites carry their audit
+      # in prose, so the rule has nothing to add. Other paths still
+      # report it.
+      - path: (^|/)(field\.go|internal/json/string\.go|integration/flow/reqctx\.go)$
+        linters:
+          - gosec
+        text: Use of unsafe calls should be audited

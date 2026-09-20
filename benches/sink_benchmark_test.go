@@ -21,11 +21,11 @@ func BenchmarkSinkRealFile(b *testing.B) {
 		{"unbuffered", func(f *os.File) (unolog.Sink, func()) { return unolog.NewJSONSink(f), func() {} }},
 		{"buffered_4k", func(f *os.File) (unolog.Sink, func()) {
 			s := unolog.NewBufferedJSONSink(f, 4096)
-			return s, func() { s.Flush() }
+			return s, func() { _ = s.Flush() }
 		}},
 		{"buffered_64k", func(f *os.File) (unolog.Sink, func()) {
 			s := unolog.NewBufferedJSONSink(f, 65536)
-			return s, func() { s.Flush() }
+			return s, func() { _ = s.Flush() }
 		}},
 	}
 	for _, tc := range cases {
@@ -60,7 +60,7 @@ func BenchmarkSinkRealFileParallel(b *testing.B) {
 		{"unbuffered", func(f *os.File) (unolog.Sink, func()) { return unolog.NewJSONSink(f), func() {} }},
 		{"buffered_64k", func(f *os.File) (unolog.Sink, func()) {
 			s := unolog.NewBufferedJSONSink(f, 65536)
-			return s, func() { s.Flush() }
+			return s, func() { _ = s.Flush() }
 		}},
 	}
 	for _, tc := range cases {

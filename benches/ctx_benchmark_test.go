@@ -32,7 +32,7 @@ func BenchmarkScratchHandle12(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
-		benchmarkFieldsOp(&op, 12)
+		benchmarkFieldsOp(&op)
 		op.End(nil)
 	}
 }

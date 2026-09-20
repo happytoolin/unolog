@@ -15,7 +15,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 )
 
 func recOf(level Level, msg string, fields ...Field) *Record {
@@ -854,7 +853,7 @@ func TestDedupeFieldsProperty(t *testing.T) {
 // struct words and every observable accessor.
 func TestFieldTimeRoundTrip(t *testing.T) {
 	zones := []*time.Location{time.UTC, time.Local, time.FixedZone("IST", 5*3600+1800)}
-	var times []time.Time
+	times := make([]time.Time, 0, len(zones)+2)
 	for _, zone := range zones {
 		times = append(times, time.Date(2026, 9, 1, 15, 30, 0, 123456789, zone))
 	}
@@ -866,8 +865,10 @@ func TestFieldTimeRoundTrip(t *testing.T) {
 			t.Fatalf("fieldOf(time) kind = %v, want KindTime", f.kind)
 		}
 		got := f.timeValue()
-		if *(*timeLayout)(unsafe.Pointer(&got)) != *(*timeLayout)(unsafe.Pointer(&want)) {
-			t.Errorf("timeLayout(%v) = %v, want %v", want, got, want)
+		// Every time.Time field is word-comparable, so == is the raw
+		// struct comparison: a lost monotonic reading or zone fails it.
+		if got != want {
+			t.Errorf("timeValue(%v) = %v, want %v", want, got, want)
 		}
 		got, ok := f.Time()
 		if !ok {

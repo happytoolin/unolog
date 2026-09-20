@@ -142,7 +142,7 @@ func TestAddStringsMatchesAdd(t *testing.T) {
 		t.Fatalf("events after End = %d, want 1", n)
 	}
 	// A nil context carries no operation and is a silent no-op.
-	AddStrings(nil, "none", "x")
+	AddStrings(nil, "none", "x") //nolint:staticcheck // nil ctx is the contract under test
 }
 
 func fieldByKey(t *testing.T, rec CapturedEvent, key string) Field {

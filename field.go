@@ -50,9 +50,14 @@ type Field struct {
 // descriptor, which lives in the binary's read-only data and is never
 // collected. typePointers walks this as one pointer, which is the whole
 // point of the union.
+//
+// meta leads for one reason: it puts a KindAny payload into the
+// runtime's {type, data} eface order, so anyValue re-reads the payload
+// as an any instead of converting the type word back from uintptr — a
+// conversion vet cannot verify and rejects (unsafeptr).
 type fieldPayload struct {
-	data unsafe.Pointer
 	meta uintptr
+	data unsafe.Pointer
 }
 
 // eface mirrors the runtime's empty-interface header. The gc ABI lays
@@ -97,8 +102,7 @@ func (p fieldPayload) anyValue() any {
 	if p.meta == 0 {
 		return nil
 	}
-	e := eface{typ: unsafe.Pointer(p.meta), data: p.data} //nolint:govet // static type descriptor, always reachable
-	return *(*any)(unsafe.Pointer(&e))
+	return *(*any)(unsafe.Pointer(&p))
 }
 
 // timeLayout mirrors the runtime's time.Time: a wall clock word, an

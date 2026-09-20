@@ -264,8 +264,8 @@ func appendLastIndices(dst []int, fields []Field, wireKey bool) []int {
 // narrowDedupeLimit (24).
 func narrowKeep(fields []Field, wireKey bool) (keep uint64, alias bool) {
 	var table [dedupeTableSize]uint64
-	for i := len(fields) - 1; i >= 0; i-- {
-		key := fields[i].key
+	for i, f := range slices.Backward(fields) {
+		key := f.key
 		if wireKey {
 			key = aliasedFieldKey(key)
 		} else if isEnvelopeKey(key) {
@@ -400,6 +400,9 @@ func appendFieldJSON(dst []byte, f Field) []byte {
 		return jsonEnc.AppendKeyString(dst, f.key, f.pay.stringValue())
 	case KindInt:
 		return jsonEnc.AppendKeyInt64(dst, f.key, f.num)
+	default:
+		// Every other kind takes the generic key-then-value path
+		// below, which has its own default arm.
 	}
 	dst = jsonEnc.AppendKey(dst, f.key)
 	switch f.kind {

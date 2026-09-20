@@ -99,14 +99,14 @@ func BenchmarkOperationLifecycle12Fields(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
-		benchmarkFieldsOp(&op, 12)
+		benchmarkFieldsOp(&op)
 		op.End(nil)
 	}
 }
 
 // benchmarkFieldsOp is benchmarkFields through the direct handle API:
 // no context lookup, so the handle stays on the caller's stack.
-func benchmarkFieldsOp(op *unolog.Operation, n int) {
+func benchmarkFieldsOp(op *unolog.Operation) {
 	op.Add("http.method", "GET")
 	op.Add("http.path", "/api/v1/orders/12345")
 	op.Add("http.route", "/api/v1/orders/:id")
@@ -119,9 +119,6 @@ func benchmarkFieldsOp(op *unolog.Operation, n int) {
 	op.Add("request_id", "req_01HZX4T7W8Y3N2M1K0J9Z8X7V6")
 	op.Add("user_id", "usr_77451")
 	op.Add("cache.hit", true)
-	for i := 12; i < n; i++ {
-		op.Add("k"+strconv.Itoa(i), i)
-	}
 }
 
 // BenchmarkOperationLifecycleSparse is the kept lifecycle with no user
@@ -144,7 +141,7 @@ func BenchmarkOperationLifecycleParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
-			benchmarkFieldsOp(&op, 12)
+			benchmarkFieldsOp(&op)
 			op.End(nil)
 		}
 	})
@@ -199,7 +196,7 @@ func BenchmarkOperationLifecycleWithPolicies(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "job"})
-		benchmarkFieldsOp(&op, 12)
+		benchmarkFieldsOp(&op)
 		op.End(nil)
 	}
 }

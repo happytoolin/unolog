@@ -12,7 +12,7 @@ import (
 // renames it), in which case AttachRequestContext falls back to the
 // allocating WithContext.
 var reqCtxOffset = func() uintptr {
-	f, ok := reflect.TypeOf(http.Request{}).FieldByName("ctx")
+	f, ok := reflect.TypeFor[http.Request]().FieldByName("ctx")
 	if !ok {
 		return 0
 	}
@@ -29,6 +29,8 @@ func AttachRequestContext(r *http.Request, ctx context.Context) *http.Request {
 	if reqCtxOffset == 0 {
 		return r.WithContext(ctx)
 	}
-	*(*context.Context)(unsafe.Add(unsafe.Pointer(r), reqCtxOffset)) = ctx
+	// The store replaces the request's ctx in place; nothing nests.
+	p := unsafe.Add(unsafe.Pointer(r), reqCtxOffset)
+	*(*context.Context)(p) = ctx //nolint:fatcontext // in-place replacement, not a nested chain
 	return r
 }

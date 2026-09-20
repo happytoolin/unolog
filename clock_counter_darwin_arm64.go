@@ -71,10 +71,7 @@ func init() {
 	// 1% of the observed span, with a floor for a short span. This covers
 	// the runtime clock's own granularity and drift; a counter on a
 	// different rate misses by far more than 1%.
-	slack := sumC / 100
-	if slack < 256 {
-		slack = 256
-	}
+	slack := max(sumC/100, 256)
 	if d := sumR - sumC; d < slack && d > -slack {
 		counterNanos = true
 	}

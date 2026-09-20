@@ -11,7 +11,7 @@ import (
 type ctxKey struct{}
 
 func TestAttachRequestContext(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/orders/1", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders/1", nil)
 	base := r.Context()
 	ctx := context.WithValue(base, ctxKey{}, "v")
 
@@ -25,8 +25,8 @@ func TestAttachRequestContext(t *testing.T) {
 	// Move memory so a missing GC write barrier would surface as a
 	// collected context.
 	runtime.GC()
-	var junk []any
-	for i := 0; i < 1<<16; i++ {
+	junk := make([]any, 0, 1<<16)
+	for range 1 << 16 {
 		junk = append(junk, make([]byte, 64))
 	}
 	runtime.GC()
@@ -45,7 +45,7 @@ func TestAttachRequestContextFallback(t *testing.T) {
 	reqCtxOffset = 0
 	defer func() { reqCtxOffset = saved }()
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	ctx := context.WithValue(r.Context(), ctxKey{}, "v")
 	got := AttachRequestContext(r, ctx)
 	if got == r {
