@@ -27,44 +27,60 @@ jobs:
           check-latest: true
           cache: true
 
+      # setup-go sets GOTOOLCHAIN=local, so a module whose go directive is
+      # newer than this job's Go cannot build here. Such a module (an
+      # integration whose dependencies need a newer Go) runs in the newer
+      # jobs of the matrix.
+      - name: List modules this Go can build
+        shell: bash
+        run: |
+          set -euo pipefail
+          have="$(go env GOVERSION)"
+          have="${have#go}"
+          while IFS= read -r modfile; do
+            need="$(awk '$1 == "go" { print $2; exit }' "$modfile")"
+            if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" = "$need" ]; then
+              dirname "$modfile"
+            else
+              echo "skip $(dirname "$modfile"): needs go $need, have go $have" >&2
+            fi
+          done < <(printf '%s\n' go.mod && git ls-files '**/go.mod') > "$RUNNER_TEMP/modules.txt"
+
       - name: Test all modules
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r modfile; do
-            moddir="$(dirname "$modfile")"
+          while IFS= read -r moddir; do
             echo "== testing $moddir =="
             (
               cd "$moddir"
               go test -shuffle=on -count=1 ./...
             )
-          done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+          done < "$RUNNER_TEMP/modules.txt"
 
       - name: Race all modules
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r modfile; do
-            moddir="$(dirname "$modfile")"
+          while IFS= read -r moddir; do
             echo "== racing $moddir =="
             (
               cd "$moddir"
               go test -race -shuffle=on -count=1 ./...
             )
-          done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+          done < "$RUNNER_TEMP/modules.txt"
 
       - name: Vet all modules
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r modfile; do
-            moddir="$(dirname "$modfile")"
+          while IFS= read -r moddir; do
             echo "== vet $moddir =="
             (
               cd "$moddir"
               go vet ./...
             )
-          done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+          done < "$RUNNER_TEMP/modules.txt"
 
       - name: Check gofmt
         shell: bash
@@ -86,8 +102,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6.2.0
         with:
-          # The toolchain must satisfy the linter's own go directive (go 1.26);
-          # the modules themselves keep their go 1.25 floor.
+          # The toolchain must satisfy the linter's own go directive (go 1.26)
+          # and the newest module go directive (go 1.26).
           go-version: '1.27.x'
           check-latest: true
           cache: true

@@ -79,8 +79,7 @@ func statusFromFiberError(err error) int {
 	if err == nil {
 		return 0
 	}
-	var fiberErr *fiber.Error
-	if errors.As(err, &fiberErr) {
+	if fiberErr, ok := errors.AsType[*fiber.Error](err); ok {
 		return fiberErr.Code
 	}
 	return http.StatusInternalServerError
