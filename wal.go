@@ -159,11 +159,13 @@ func (e *event) fits(strLen int, kind FieldKind) bool {
 // At the field limit, a key the event holds takes the new value in
 // place (its position stays). A canonical key replaces only a write of
 // the same kind, because scanWAL reads the last write of the kind it
-// needs; otherwise it is appended. A new key first compacts the WAL,
-// and is dropped and counted only if the event is still full. It takes
-// a pointer so the hot callers do not reserve stack space to pass a
-// Field, and it copies *p before a cut, so the caller's Field never
-// changes.
+// needs. If that write is not the key's last write, it is removed and
+// the new value appended, so the new value is still the one the line
+// shows; with no write of the same kind, the new value is appended. A
+// new key first compacts the WAL, and is dropped and counted only if
+// the event is still full. It takes a pointer so the hot callers do not
+// reserve stack space to pass a Field, and it copies *p before a cut,
+// so the caller's Field never changes.
 func (e *event) pushLimited(p *Field) {
 	f := *p
 	if len(e.fields) < e.limits.maxFields {
@@ -172,12 +174,26 @@ func (e *event) pushLimited(p *Field) {
 		return
 	}
 	canonical := isCanonicalKey(f.key)
+	last := -1
 	for i := len(e.fields) - 1; i >= 0; i-- {
-		if e.fields[i].key == f.key && (!canonical || e.fields[i].kind == f.kind) {
-			e.limitValue(&f)
+		if e.fields[i].key != f.key {
+			continue
+		}
+		if last < 0 {
+			last = i
+		}
+		if canonical && e.fields[i].kind != f.kind {
+			continue
+		}
+		e.limitValue(&f)
+		if i == last {
 			e.fields[i] = f
 			return
 		}
+		// A later write of another kind would hide a replacement in
+		// place: the line shows the last write of a key.
+		e.fields = append(slices.Delete(e.fields, i, i+1), f)
+		return
 	}
 	if !canonical {
 		// Once a compaction leaves the event full, no later write can

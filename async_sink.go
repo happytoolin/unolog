@@ -30,9 +30,11 @@ type AsyncJSONSinkConfig struct {
 
 	// ErrorHandler receives write errors (errors.Is matches
 	// ErrSinkWrite), writer panics (*PanicError, ErrSinkPanic), and drop
-	// reports (ErrSinkFull). It runs on the writer goroutine. Nil
-	// selects the default, which writes to os.Stderr at most once per
-	// second; a panicking handler also falls back to it.
+	// reports (ErrSinkFull). It runs on the writer goroutine, so it must
+	// not call Close, or Flush with a context that is never done: both
+	// wait for that goroutine and can block forever. Nil selects the
+	// default, which writes to os.Stderr at most once per second; a
+	// panicking handler also falls back to it.
 	ErrorHandler func(error)
 }
 
@@ -237,6 +239,7 @@ func (s *AsyncJSONSink) writeBatch(batch []byte) (err error) {
 		}
 	}()
 	n, err := s.w.Write(batch)
+	endCutLine(s.w, batch, n)
 	if err == nil && n < len(batch) {
 		err = io.ErrShortWrite
 	}

@@ -87,18 +87,113 @@ func TestJSONSinkWriteErrorDefaultReport(t *testing.T) {
 }
 
 // Write keeps the Sink contract: it returns nothing and swallows the
-// error that WriteErr returns.
+// error that writeErr returns.
 func TestJSONSinkWriteIgnoresErrors(t *testing.T) {
 	sink := NewJSONSink(jsonWriterFunc(func([]byte) (int, error) { return 0, errors.New("x") }))
 	sink.Write(t.Context(), recOf(LevelInfo, "m"))
-	if err := sink.WriteErr(t.Context(), recOf(LevelInfo, "m")); err == nil || !strings.Contains(err.Error(), "x") {
-		t.Fatalf("WriteErr = %v", err)
+	if err := sink.writeErr(t.Context(), recOf(LevelInfo, "m")); err == nil || !strings.Contains(err.Error(), "x") {
+		t.Fatalf("writeErr = %v", err)
 	}
 	var nilSink *JSONSink
-	if err := nilSink.WriteErr(t.Context(), recOf(LevelInfo, "m")); err != nil {
-		t.Fatalf("nil sink WriteErr = %v", err)
+	if err := nilSink.writeErr(t.Context(), recOf(LevelInfo, "m")); err != nil {
+		t.Fatalf("nil sink writeErr = %v", err)
 	}
-	if err := sink.WriteErr(t.Context(), nil); err != nil {
-		t.Fatalf("nil record WriteErr = %v", err)
+	if err := sink.writeErr(t.Context(), nil); err != nil {
+		t.Fatalf("nil record writeErr = %v", err)
+	}
+}
+
+// filterSink embeds *JSONSink and overrides Write, as a sink that
+// filters or redacts lines does.
+type filterSink struct {
+	*JSONSink
+	calls int
+}
+
+func (s *filterSink) Write(ctx context.Context, rec *Record) {
+	s.calls++
+	s.JSONSink.Write(ctx, rec)
+}
+
+// Embedding *JSONSink promotes no WriteErr, so End calls the Write
+// override instead of skipping it.
+func TestJSONSinkEmbeddedWriteOverrideRuns(t *testing.T) {
+	var buf bytes.Buffer
+	sink := &filterSink{JSONSink: NewJSONSink(&buf)}
+	if _, ok := Sink(sink).(FallibleSink); ok {
+		t.Fatal("a type that embeds *JSONSink is a FallibleSink")
+	}
+	rt := MustCompile(Config{Sink: sink, SamplingRate: 1})
+	if !Start(context.Background(), rt, OperationStart{}).End(nil) || sink.calls != 1 {
+		t.Fatalf("End made %d calls to the Write override, want 1", sink.calls)
+	}
+	if buf.Len() == 0 {
+		t.Fatal("the override wrote no line")
+	}
+}
+
+// fallibleSink is a third-party sink that reports its write errors.
+type fallibleSink struct {
+	err    error
+	writes int
+}
+
+func (s *fallibleSink) Write(context.Context, *Record) { s.writes++ }
+
+func (s *fallibleSink) WriteErr(context.Context, *Record) error { return s.err }
+
+// End calls WriteErr on a FallibleSink, not Write, and reports its error.
+func TestFallibleSinkReportsWriteErrors(t *testing.T) {
+	errRemote := errors.New("remote down")
+	var reported error
+	sink := &fallibleSink{err: errRemote}
+	rt := MustCompile(Config{Sink: sink, SamplingRate: 1, ErrorHandler: func(err error) { reported = err }})
+	if Start(context.Background(), rt, OperationStart{}).End(nil) {
+		t.Fatal("End reported an emission through a failed write")
+	}
+	if !errors.Is(reported, ErrSinkWrite) || !errors.Is(reported, errRemote) || sink.writes != 0 {
+		t.Fatalf("reported %v after %d Write calls, want the WriteErr error and no Write call", reported, sink.writes)
+	}
+}
+
+// After a short write, the sink ends the cut line, so the next line
+// starts on its own line.
+func TestJSONSinkEndsCutLine(t *testing.T) {
+	var buf bytes.Buffer
+	first := true
+	sink := NewJSONSink(jsonWriterFunc(func(p []byte) (int, error) {
+		if first {
+			first = false
+			n, _ := buf.Write(p[:len(p)/2])
+			return n, errors.New("disk full")
+		}
+		return buf.Write(p)
+	}))
+	cut, next := recOf(LevelInfo, "cut"), recOf(LevelInfo, "next")
+	sink.Write(t.Context(), cut)
+	sink.Write(t.Context(), next)
+	want := string(cut.Encoded()[:len(cut.Encoded())/2]) + "\n" + string(next.Encoded())
+	if buf.String() != want {
+		t.Fatalf("output = %q, want %q", buf.String(), want)
+	}
+}
+
+func TestEndCutLine(t *testing.T) {
+	b := []byte("{\"a\":1}\n{\"b\":2}\n")
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{
+		{0, ""},            // nothing written: no line to end
+		{3, "\n"},          // cut inside the first line
+		{8, ""},            // cut after the first newline
+		{len(b) - 1, "\n"}, // only the last newline is missing
+		{len(b), ""},       // a full write
+	} {
+		var buf bytes.Buffer
+		endCutLine(&buf, b, tc.n)
+		if buf.String() != tc.want {
+			t.Fatalf("n=%d: wrote %q, want %q", tc.n, buf.String(), tc.want)
+		}
 	}
 }

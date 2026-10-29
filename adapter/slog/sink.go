@@ -45,10 +45,12 @@ func New(l *stdslog.Logger) *Sink {
 
 // Write implements unolog.Sink: the record's fields are appended in
 // insertion order (last-write-wins duplicates resolved) as typed slog
-// attributes. A field whose key is one the handler writes itself
-// (slog.TimeKey, LevelKey, MessageKey, SourceKey) is renamed to
+// attributes. A field whose key is one the handler writes on every
+// record (slog.TimeKey, LevelKey, MessageKey) is renamed to
 // "fields.<key>", as the canonical line renames "message", "time", and
-// "level".
+// "level". A "source" field keeps its key: the handler writes its own
+// "source" only with HandlerOptions.AddSource, which the sink cannot
+// see.
 func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 	if s == nil || s.logger == nil || rec == nil {
 		return
@@ -96,8 +98,6 @@ func wireKey(f unolog.Field) string {
 		return "fields." + stdslog.LevelKey
 	case stdslog.MessageKey:
 		return "fields." + stdslog.MessageKey
-	case stdslog.SourceKey:
-		return "fields." + stdslog.SourceKey
 	default:
 		return key
 	}

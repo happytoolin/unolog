@@ -42,9 +42,11 @@ func NewTestSink() *TestSink {
 
 // Write captures one event, deep-copying the field values that are
 // mutable (maps, slices, arrays — including through reflect); typed
-// scalars are immutable by construction. Pointer payloads are NOT
-// cloned (the pointed-to value stays shared with the caller), except
-// that error identity is deliberately preserved so errors.Is works
+// scalars are immutable by construction. A pointer payload is not
+// cloned (the pointed-to value stays shared with the caller), and
+// neither is a pointer held in a map[string]any or []any. A pointer
+// inside another map, slice, or array type is cloned by the reflect
+// copy. Error identity is deliberately preserved so errors.Is works
 // on captured fields. Struct payloads copy shallowly: a struct that
 // wraps a map or slice stays shared with the caller, because a
 // reflect field copy cannot set unexported fields (and would break

@@ -1,3 +1,20 @@
+# Upgrading from unolog v1.1 to v1.2
+
+v1.2 adds no breaking API change, but these defaults change what an event
+holds and what reaches the output. Check them before you upgrade.
+
+| Change | Effect | To keep the v1.1 behavior |
+|---|---|---|
+| Field limit | An event holds at most 256 distinct keys (`DefaultMaxFields`). A new key past the limit is dropped and counted in `unolog.dropped_fields`. Canonical keys are never dropped. | Set `Config.MaxFields` to `-1`. |
+| Value limit | A string value longer than 32 KiB (`DefaultMaxValueBytes`) is cut and counted in `unolog.truncated_values`. The canonical line also cuts error text. | Set `Config.MaxValueBytes` to `-1`. |
+| Panic containment | A panicking `Sink` or `Sampler` no longer crashes the request. unolog reports a `*unolog.PanicError` to `Config.ErrorHandler`, which writes to stderr by default. | Not available. Set `ErrorHandler` to send the reports elsewhere. |
+| `JSONSink` write errors | A failed or short write goes to `Config.ErrorHandler`, and `End` returns `false`. | Set `ErrorHandler` to a function that ignores the report. `End` still returns `false`. |
+| Adapter key renames | A user field named after a key the logger writes itself becomes `fields.<key>`: `time`, `level`, and `msg` for slog, and `ts`, `level`, `logger`, `caller`, `msg`, and `stacktrace` for zap's `New`. | Not available. Rename the field, or use `uzap.NewWithEncoderConfig` with your encoder keys. |
+| Go version | `integration/gin`, `integration/echo`, and `integration/fiberv3` need Go 1.26, because their dependencies do. The other modules still need Go 1.25. | Keep those integrations at v1.1. |
+
+See [Limits and failure handling](README.md#limits-and-failure-handling)
+for the details.
+
 # Migrating from happycontext v0.x to unolog v1.0.0
 
 v1.0.0 is the v2 record core — and the release that renames the project.

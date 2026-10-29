@@ -44,7 +44,7 @@ Create the logger first. Create the runtime once after it. Inject or close over 
 
 ## Adapter behavior
 
-The adapter maps unolog levels to `slog.LevelDebug`, `Info`, `Warn`, and `Error`. It calls the existing handler's `Enabled` method before it builds attributes. It forwards fields as typed `slog.Attr` values and preserves the logger's handler behavior. A user field named `time`, `level`, `msg`, or `source` becomes `fields.<key>`, so it cannot collide with the handler's own keys.
+The adapter maps unolog levels to `slog.LevelDebug`, `Info`, `Warn`, and `Error`. It calls the existing handler's `Enabled` method before it builds attributes. It forwards fields as typed `slog.Attr` values and preserves the logger's handler behavior. A user field named `time`, `level`, or `msg` becomes `fields.<key>`, so it cannot collide with the handler's own keys. A `source` field keeps its key, because the handler writes its own `source` only with `AddSource`. Do not use a `source` field with `AddSource`.
 
 Bound logger attributes still apply:
 

@@ -238,6 +238,33 @@ func TestAsyncJSONSinkShortWriteDefaultReport(t *testing.T) {
 	}
 }
 
+// After a short write, the writer ends the cut line, so the next batch
+// starts on its own line.
+func TestAsyncJSONSinkEndsCutLine(t *testing.T) {
+	var out lockedBuffer
+	var calls atomic.Int32
+	sink := NewAsyncJSONSink(jsonWriterFunc(func(p []byte) (int, error) {
+		if calls.Add(1) == 1 {
+			n, _ := out.Write(p[:len(p)/2])
+			return n, errors.New("disk full")
+		}
+		return out.Write(p)
+	}), AsyncJSONSinkConfig{ErrorHandler: func(error) {}})
+	cut, next := recOf(LevelInfo, "cut"), recOf(LevelInfo, "next")
+	sink.Write(t.Context(), cut)
+	if err := sink.Flush(t.Context()); !errors.Is(err, ErrSinkWrite) {
+		t.Fatalf("Flush = %v, want the write error", err)
+	}
+	sink.Write(t.Context(), next)
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := string(cut.Encoded()[:len(cut.Encoded())/2]) + "\n" + string(next.Encoded())
+	if out.String() != want {
+		t.Fatalf("output = %q, want %q", out.String(), want)
+	}
+}
+
 // Close returns a write error that no Flush returned, once.
 func TestAsyncJSONSinkCloseReturnsErrorOnce(t *testing.T) {
 	sink := NewAsyncJSONSink(jsonWriterFunc(func([]byte) (int, error) {
@@ -511,14 +538,25 @@ func FuzzAsyncJSONSink(f *testing.F) {
 		var out lockedBuffer
 		var calls, lost atomic.Int64
 		sink := NewAsyncJSONSink(jsonWriterFunc(func(p []byte) (int, error) {
+			if len(p) == 1 && p[0] == '\n' {
+				return out.Write(p) // endCutLine after a short write
+			}
 			lines := int64(bytes.Count(p, []byte("\n")))
 			switch calls.Add(1) % 7 {
 			case 2:
 				lost.Add(lines)
 				return 0, errors.New("write failed")
 			case 4:
-				lost.Add(lines)
-				return len(p) - 1, nil
+				// A short write keeps its whole lines. endCutLine then
+				// ends the cut line, which completes it only when just
+				// its newline is missing.
+				n, _ := out.Write(p[:len(p)/2])
+				kept := int64(bytes.Count(p[:n], []byte("\n")))
+				if p[n] == '\n' {
+					kept++
+				}
+				lost.Add(lines - kept)
+				return n, nil
 			case 6:
 				lost.Add(lines)
 				panic("writer panic")
@@ -540,18 +578,24 @@ func FuzzAsyncJSONSink(f *testing.F) {
 
 		got := strings.SplitAfter(out.String(), "\n")
 		got = got[:len(got)-1] // SplitAfter leaves an empty tail
-		if total := int64(len(got)) + int64(sink.Dropped()) + lost.Load(); total != int64(len(program)) {
-			t.Fatalf("written %d + dropped %d + lost %d != %d lines", len(got), sink.Dropped(), lost.Load(), len(program))
-		}
+		// Each line is a written line or the start of one that a short
+		// write cut, in order.
+		var written int64
 		next := 0
 		for _, line := range got {
-			for next < len(want) && want[next] != line {
+			for next < len(want) && !strings.HasPrefix(want[next], strings.TrimSuffix(line, "\n")) {
 				next++
 			}
 			if next == len(want) {
 				t.Fatalf("line %q is out of order or unknown", line)
 			}
+			if want[next] == line {
+				written++
+			}
 			next++
+		}
+		if total := written + int64(sink.Dropped()) + lost.Load(); total != int64(len(program)) {
+			t.Fatalf("written %d + dropped %d + lost %d != %d lines", written, sink.Dropped(), lost.Load(), len(program))
 		}
 	})
 }

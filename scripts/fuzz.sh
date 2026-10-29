@@ -8,8 +8,8 @@
 #
 # Targets are found by scanning *_test.go files for "func FuzzX(f
 # *testing.F)", so a new fuzz target runs in CI, in the nightly job, and in
-# `just fuzz` without a list to update. A target that go test does not run
-# (for example, one behind a build tag) fails. -t takes any
+# `just fuzz` without a list to update. A target that go test does not
+# fuzz (for example, one behind a build tag) fails. -t takes any
 # `go test -fuzztime` value (default 30s). With package dirs, only those
 # directories run. Set FUZZ_FAILURES_FILE to also write the failing targets
 # to that file.
@@ -80,6 +80,25 @@ fi
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
+# fuzzed reports whether log $1 shows that the engine ran. go test exits 0
+# without fuzzing when -fuzz matches nothing it compiled, or when a build
+# tag excludes every test file of the package ("no test files").
+fuzzed() {
+	grep -q '^fuzz: elapsed:' "$1"
+}
+
+# deadline_only reports whether the failed run in log $1 is only the fuzz
+# engine's own stop: in Go 1.25 (the fuzz jobs' version) the engine can
+# report "context deadline exceeded" when -fuzztime ends
+# (go.dev/issue/75804; Go 1.27.1 has the fix). A real failure writes its
+# input, and the log names that file.
+deadline_only() {
+	fuzzed "$1" &&
+		! grep -q 'Failing input written to' "$1" &&
+		grep -qE '^[[:space:]]+context deadline exceeded$' "$1" &&
+		[ "$(grep -c -- '--- FAIL' "$1")" -eq 1 ]
+}
+
 failures=()
 for dir in "${dirs[@]}"; do
 	if ! targets="$(targets_in "$dir")" || [ -z "$targets" ]; then
@@ -92,10 +111,11 @@ for dir in "${dirs[@]}"; do
 			continue
 		fi
 		echo "=== $dir $target ($fuzztime)"
-		# go test exits 0 when -fuzz matches nothing it compiled.
 		if (cd "$dir" && go test . -run '^$' -fuzz "^${target}\$" -fuzztime "$fuzztime") 2>&1 | tee "$log" &&
-			! grep -q 'no fuzz tests to fuzz' "$log"; then
+			fuzzed "$log"; then
 			echo "PASS $dir $target"
+		elif deadline_only "$log"; then
+			echo "PASS $dir $target (the engine's deadline error at the end of -fuzztime, go.dev/issue/75804)"
 		else
 			echo "FAIL $dir $target"
 			failures+=("$dir $target")

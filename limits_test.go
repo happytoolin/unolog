@@ -208,6 +208,35 @@ func TestMaxFieldsKeepsCanonicalKindAtLimit(t *testing.T) {
 	}
 }
 
+// At the limit, a canonical write must stay the value the line shows
+// (Lookup resolves a key as the encoder does), as it is below the
+// limit: the int 503 after a string http.status replaces the earlier
+// int 200 without hiding behind the string.
+func TestMaxFieldsCanonicalLastWriteWins(t *testing.T) {
+	for _, maxFields := range []int{1, -1} {
+		rt, ts := testRT(t, func(c *Config) { c.MaxFields = maxFields })
+		op := Start(context.Background(), rt, OperationStart{Domain: DomainHTTP, Name: "request"})
+		ctx := op.Context()
+		Add(ctx, "a", 1)
+		Add(ctx, KeyHTTPStatus, 200)
+		Add(ctx, KeyHTTPStatus, "pending")
+		Add(ctx, KeyHTTPStatus, 503)
+		for range 100 {
+			Add(ctx, KeyHTTPStatus, "pending", KeyHTTPStatus, 503) // stays bounded
+		}
+		op.End(nil)
+		ev := ts.Events()[0]
+		for key, want := range map[string]any{KeyHTTPStatus: int64(503), KeyOpOutcome: string(OutcomeFailure)} {
+			if v, _ := ev.Lookup(key); v != want {
+				t.Fatalf("MaxFields=%d: %s = %v, want %v", maxFields, key, v, want)
+			}
+		}
+		if n := len(ev.Fields()); maxFields > 0 && n > 10 {
+			t.Fatalf("MaxFields=%d: record holds %d fields: repeated writes are not bounded", maxFields, n)
+		}
+	}
+}
+
 // Canonical fields written after the limit is reached must still land:
 // the integrations write http.status, the route, and the error last.
 func TestMaxFieldsNeverDropsCanonicalKeys(t *testing.T) {

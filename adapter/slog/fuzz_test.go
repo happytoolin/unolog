@@ -59,11 +59,11 @@ func FuzzSinkWritesValidJSON(f *testing.F) {
 	})
 }
 
-// memberName is the member name of a user key: slog's own time/level/msg/source
+// memberName is the member name of a user key: slog's own time/level/msg
 // are renamed to "fields.<key>".
 func memberName(key string) string {
 	switch key {
-	case "time", "level", "msg", "source":
+	case "time", "level", "msg":
 		return "fields." + key
 	}
 	return key

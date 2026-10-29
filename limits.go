@@ -11,9 +11,10 @@ const (
 	DefaultMaxFields = 256
 
 	// DefaultMaxValueBytes is the per-value byte limit when
-	// Config.MaxValueBytes is zero. It keeps request bodies, SQL text,
-	// and stack traces from producing lines that log pipelines split or
-	// reject.
+	// Config.MaxValueBytes is zero. It keeps a request body, SQL text,
+	// or stack trace from making a line unbounded. It does not keep a
+	// line under a log pipeline's line limit: set Config.MaxValueBytes
+	// (and Config.MaxFields) to match that limit.
 	DefaultMaxValueBytes = 32 << 10
 )
 

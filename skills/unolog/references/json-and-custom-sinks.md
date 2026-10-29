@@ -14,7 +14,7 @@ rt := unolog.MustCompile(unolog.Config{
 })
 ```
 
-`NewJSONSink` writes one canonical line per event. It serializes writes, so ordinary writers such as `bytes.Buffer` are safe. A nil writer creates a no-op sink. Use this before adding a logger dependency only to format JSON. A failed or short write goes to `Config.ErrorHandler` (`unolog.ErrSinkWrite`), and `End` returns `false`.
+`NewJSONSink` writes one canonical line per event. It serializes writes, so ordinary writers such as `bytes.Buffer` are safe. A nil writer creates a no-op sink. Use this before adding a logger dependency only to format JSON. A failed or short write goes to `Config.ErrorHandler` (`unolog.ErrSinkWrite`), and `End` returns `false`. After a short write, the sink writes a newline, so the next line starts on its own line.
 
 ## Slow writers
 
@@ -25,7 +25,7 @@ sink := unolog.NewAsyncJSONSink(os.Stdout, unolog.AsyncJSONSinkConfig{})
 defer sink.Close()
 ```
 
-It copies each line into a bounded buffer (`BufferBytes`, default 1 MiB) and writes from one goroutine. It never blocks a request: when the buffer is full, it drops the line, counts it in `Dropped()`, and reports `unolog.ErrSinkFull` to its own `ErrorHandler`. Call `Close` at shutdown, and `Flush(ctx)` when lines must be written before a step continues. Keep `NewJSONSink` when every line must be written.
+It copies each line into a bounded buffer (`BufferBytes`, default 1 MiB) and writes from one goroutine. It never blocks a request: when the buffer is full, it drops the line, counts it in `Dropped()`, and reports `unolog.ErrSinkFull` to its own `ErrorHandler`. Call `Close` at shutdown, and `Flush(ctx)` when lines must be written before a step continues. The `ErrorHandler` runs on the writer goroutine: do not call `Close`, or `Flush` with a context that is never done, from it, because both wait for that goroutine. Keep `NewJSONSink` when every line must be written.
 
 ## Sink contract
 
@@ -45,6 +45,7 @@ The method runs synchronously when the operation ends. Follow these rules:
 - Return promptly. A blocked sink blocks request completion.
 - Treat the context as the operation context at end time. Background work started with it inherits request cancellation.
 - To report write errors, also implement `unolog.FallibleSink` (`WriteErr(ctx, rec) error`). `End` then calls `WriteErr`, reports a non-nil error to `Config.ErrorHandler`, and returns `false`. Otherwise, handle errors inside the sink.
+- A type that embeds a `FallibleSink` also gets its `WriteErr`. If the type overrides `Write`, override `WriteErr` too, or `End` skips the override. A type that embeds `*unolog.JSONSink` is an ordinary sink: `End` calls its `Write`, and write errors are not reported.
 
 ## Retain canonical lines safely
 

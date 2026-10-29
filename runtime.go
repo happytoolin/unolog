@@ -67,7 +67,8 @@ type Config struct {
 	// error and panic fields), and the SetMessage text. Longer values
 	// are cut at a UTF-8 boundary and counted in the
 	// unolog.truncated_values field. The text of an error value is cut
-	// when the canonical line is encoded, and that cut is not counted.
+	// when the canonical line is encoded, and that cut is not counted;
+	// adapters that render the error themselves do not cut it.
 	// Field keys and other value types are not cut.
 	// Zero selects DefaultMaxValueBytes; a negative value removes the
 	// limit.
@@ -75,11 +76,11 @@ type Config struct {
 
 	// ErrorHandler receives the failures unolog contains instead of
 	// crashing the caller: a panicking Sink or Sampler, reported as a
-	// *PanicError, and a failed write from a FallibleSink such as
-	// JSONSink (errors.Is matches ErrSinkWrite). Nil selects the default, which writes the error and
-	// its stack to os.Stderr at most once per second. The handler runs
-	// synchronously inside End. A panic in the handler is recovered, and
-	// the report goes to the default instead.
+	// *PanicError, and a failed write from JSONSink or a FallibleSink
+	// (errors.Is matches ErrSinkWrite). Nil selects the default, which
+	// writes the error and its stack to os.Stderr at most once per
+	// second. The handler runs synchronously inside End. A panic in the
+	// handler is recovered, and the report goes to the default instead.
 	ErrorHandler func(error)
 }
 
@@ -95,7 +96,7 @@ type Runtime struct {
 	limits     limits
 	onError    func(error)
 	reporter   *rateLimitedReporter
-	fallible   FallibleSink // sink, when it reports write errors
+	writeErr   func(context.Context, *Record) error // sink's write that reports errors, or nil
 
 	// alwaysKeep is the compiled keep-everything fast path: rate
 	// exactly 1.0 with no sampler, per-level rates, or policies means
@@ -121,7 +122,12 @@ func Compile(cfg Config) (*Runtime, error) {
 		onError:  cfg.ErrorHandler,
 		reporter: newStderrReporter(), // the default, and the fallback for a panicking ErrorHandler
 	}
-	rt.fallible, _ = cfg.Sink.(FallibleSink)
+	switch s := cfg.Sink.(type) {
+	case *JSONSink:
+		rt.writeErr = s.writeErr
+	case FallibleSink:
+		rt.writeErr = s.WriteErr
+	}
 
 	if !(rt.rate >= 0 && rt.rate <= 1) {
 		return nil, fmt.Errorf("unolog: sampling rate %g: %w", rt.rate, ErrInvalidRate)
@@ -312,7 +318,7 @@ func (rt *Runtime) sample(in SampleInput) (keep bool) {
 }
 
 // emit writes rec to the configured sink and reports whether the sink
-// wrote it. A sink panic and a FallibleSink error are contained and
+// wrote it. A sink panic and a write error are contained and
 // reported: logging must not crash the request. The nil-runtime and
 // nil-sink cases are no-ops.
 func (rt *Runtime) emit(ctx context.Context, rec *Record) (ok bool) {
@@ -325,8 +331,8 @@ func (rt *Runtime) emit(ctx context.Context, rec *Record) (ok bool) {
 			ok = false
 		}
 	}()
-	if rt.fallible != nil {
-		if err := rt.fallible.WriteErr(ctx, rec); err != nil {
+	if rt.writeErr != nil {
+		if err := rt.writeErr(ctx, rec); err != nil {
 			rt.reportError(fmt.Errorf("unolog: %w: %w", ErrSinkWrite, err))
 			return false
 		}
