@@ -512,6 +512,9 @@ func FuzzLimits(f *testing.F) {
 	f.Add(uint8(1), uint8(1), []byte("http.status=5;a=b;error=e"))
 	f.Add(uint8(0), uint8(0), []byte(""))
 	f.Add(uint8(0), uint8(63), []byte("a=1;op.outcome=failure;op.outcome=bogus;op.outcome=bogus"))
+	f.Add(uint8(0), uint8(63), []byte("a=1;op.domain=x;op.name=x;op.id=x;op.source=x;op.attempt=x;op.max_attempts=x;op.code=x;"+
+		"op.outcome=failure;http.method=x;http.path=x;http.route=x;http.status=x;duration_ms=x;error=x;panic=x;"+
+		"job.scheduled_at=x;op.outcome=bogus"))
 	f.Fuzz(func(t *testing.T, maxFields, maxBytes uint8, program []byte) {
 		cfg := func(c *Config) {
 			c.MaxFields = int(maxFields%32) + 1
@@ -596,7 +599,7 @@ func FuzzLimits(f *testing.F) {
 			t.Fatalf("WAL holds %d fields, model holds %d", got, walLen)
 		}
 		written := len(op.ev.fields)
-		if written > lim.maxFields+len(canonicalKeysForTest()) {
+		if written > lim.maxFields+len(canonicalKeysForTest())+1 { // +1: a valid and an invalid op.outcome
 			t.Fatalf("WAL holds %d fields over a limit of %d", written, lim.maxFields)
 		}
 		op.End(nil)
