@@ -71,7 +71,8 @@ func limitMapStrings(m map[string]any, n int) (map[string]any, int) {
 
 // isCanonicalKey reports whether key is one of the keys unolog itself
 // writes. The field limit never drops these: each holds at most one
-// slot past the limit, so the event stays bounded.
+// slot per kind past the limit (see pushCanonical), so the event stays
+// bounded.
 func isCanonicalKey(key string) bool {
 	switch key {
 	case KeyOpDomain, KeyOpName, KeyOpID, KeyOpSource, KeyOpAttempt,

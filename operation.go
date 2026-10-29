@@ -209,16 +209,20 @@ type walScan struct {
 	hasMaxAttempts bool
 }
 
+// resolvesOutcome reports whether op.outcome write f is one End
+// resolves from: a valid outcome string.
+func resolvesOutcome(f *Field) bool {
+	return f.kind == KindString && IsValidOutcome(Outcome(f.str))
+}
+
 func scanWAL(ev *event) walScan {
 	var s walScan
 	for _, f := range slices.Backward(ev.fields) {
 		switch f.key {
 		case KeyOpOutcome:
-			if !s.hasOutcome && f.kind == KindString {
-				if o := Outcome(f.str); IsValidOutcome(o) {
-					s.outcome = o
-					s.hasOutcome = true
-				}
+			if !s.hasOutcome && resolvesOutcome(&f) {
+				s.outcome = Outcome(f.str)
+				s.hasOutcome = true
 			}
 		case KeyHTTPStatus:
 			if !s.hasCode && f.kind == KindInt {
@@ -394,7 +398,13 @@ func (op *Operation) annotatePostSeal(in *commitInput) {
 
 	fields := ev.fields
 	add := func(f Field) { fields = append(fields, f) }
-	appendStartFields(op.start, in.scan, add)
+	// The OperationStart strings join here, after the seal, so they take
+	// the value limit here: the worker integration fills them from job
+	// metadata.
+	appendStartFields(op.start, in.scan, func(f Field) {
+		ev.limitValue(&f)
+		add(f)
+	})
 	add(Int64(KeyDurationMS, in.duration.Milliseconds()))
 	if op.start.Domain != DomainHTTP && in.scan.hasOpCode {
 		add(Int64(KeyOpCode, int64(in.scan.opCode)))

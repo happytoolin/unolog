@@ -157,12 +157,8 @@ func (e *event) fits(strLen int, kind FieldKind) bool {
 
 // pushLimited is push for a full event or a value that may need a cut.
 // At the field limit, a key the event holds takes the new value in
-// place (its position stays). A canonical key replaces only a write of
-// the same kind, because scanWAL reads the last write of the kind it
-// needs. If that write is not the key's last write, it is removed and
-// the new value appended, so the new value is still the one the line
-// shows; with no write of the same kind, the new value is appended. A
-// new key first compacts the WAL, and is dropped and counted only if
+// place (its position stays); pushCanonical handles the canonical keys.
+// A new key first compacts the WAL, and is dropped and counted only if
 // the event is still full. It takes a pointer so the hot callers do not
 // reserve stack space to pass a Field, and it copies *p before a cut,
 // so the caller's Field never changes.
@@ -173,43 +169,61 @@ func (e *event) pushLimited(p *Field) {
 		e.fields = append(e.fields, f)
 		return
 	}
-	canonical := isCanonicalKey(f.key)
+	if isCanonicalKey(f.key) {
+		e.limitValue(&f) // a canonical write always lands
+		e.pushCanonical(&f)
+		return
+	}
+	for i := len(e.fields) - 1; i >= 0; i-- {
+		if e.fields[i].key == f.key {
+			e.limitValue(&f)
+			e.fields[i] = f
+			return
+		}
+	}
+	// Once a compaction leaves the event full, no later write can add a
+	// write to remove: a full event only replaces in place, and the
+	// canonical writes it appends are never removed.
+	if !e.saturated {
+		e.compact()
+	}
+	if len(e.fields) >= e.limits.maxFields {
+		e.saturated = true
+		e.dropped++
+		return
+	}
+	e.limitValue(&f)
+	e.fields = append(e.fields, f)
+}
+
+// pushCanonical lands canonical write f, already cut, on a full event.
+// It replaces only a write that scanWAL reads the same way: the same
+// kind, and for op.outcome the same validity, because scanWAL skips an
+// invalid outcome and resolves from the valid one before it. If that
+// write is not the key's last write, it is removed and f appended, so f
+// is still the write the line shows. With no such write, f is appended,
+// so a key holds at most one write per kind (two for op.outcome).
+func (e *event) pushCanonical(f *Field) {
 	last := -1
 	for i := len(e.fields) - 1; i >= 0; i-- {
-		if e.fields[i].key != f.key {
+		g := &e.fields[i]
+		if g.key != f.key {
 			continue
 		}
 		if last < 0 {
 			last = i
 		}
-		if canonical && e.fields[i].kind != f.kind {
+		if g.kind != f.kind || (f.key == KeyOpOutcome && resolvesOutcome(g) != resolvesOutcome(f)) {
 			continue
 		}
-		e.limitValue(&f)
 		if i == last {
-			e.fields[i] = f
+			*g = *f
 			return
 		}
-		// A later write of another kind would hide a replacement in
-		// place: the line shows the last write of a key.
-		e.fields = append(slices.Delete(e.fields, i, i+1), f)
+		e.fields = append(slices.Delete(e.fields, i, i+1), *f)
 		return
 	}
-	if !canonical {
-		// Once a compaction leaves the event full, no later write can
-		// add a write to remove: a full event only replaces in place,
-		// and the canonical writes it appends are never removed.
-		if !e.saturated {
-			e.compact()
-		}
-		if len(e.fields) >= e.limits.maxFields {
-			e.saturated = true
-			e.dropped++
-			return
-		}
-	}
-	e.limitValue(&f)
-	e.fields = append(e.fields, f)
+	e.fields = append(e.fields, *f)
 }
 
 // compact removes each non-canonical write that a later write of the

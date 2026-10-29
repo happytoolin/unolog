@@ -1,7 +1,10 @@
 # Upgrading from unolog v1.1 to v1.2
 
-v1.2 adds no breaking API change, but these defaults change what an event
-holds and what reaches the output. Check them before you upgrade.
+v1.2 adds three fields to `Config`: `MaxFields`, `MaxValueBytes`, and
+`ErrorHandler`. A `Config` literal without field names no longer compiles.
+Add the field names before you upgrade. The other API changes only add
+names. These defaults change what an event holds and what reaches the
+output. Check them before you upgrade.
 
 | Change | Effect | To keep the v1.1 behavior |
 |---|---|---|

@@ -237,6 +237,49 @@ func TestMaxFieldsCanonicalLastWriteWins(t *testing.T) {
 	}
 }
 
+// End skips an invalid op.outcome and resolves from the valid one
+// before it. At the field limit, the invalid write must not replace
+// the valid one, or a failure resolves as success and can be sampled
+// out.
+func TestMaxFieldsKeepsValidOutcome(t *testing.T) {
+	for _, maxFields := range []int{1, -1} {
+		rt, ts := testRT(t, func(c *Config) { c.MaxFields = maxFields })
+		op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "sync"})
+		ctx := op.Context()
+		Add(ctx, "a", 1)
+		Add(ctx, KeyOpOutcome, string(OutcomeFailure))
+		for range 100 {
+			Add(ctx, KeyOpOutcome, "bogus") // stays bounded
+		}
+		op.End(nil)
+		ev := ts.Events()[0]
+		if v, _ := ev.Lookup(KeyOpOutcome); v != string(OutcomeFailure) {
+			t.Fatalf("MaxFields=%d: %s = %v, want %v", maxFields, KeyOpOutcome, v, OutcomeFailure)
+		}
+		if n := len(ev.Fields()); maxFields > 0 && n > 10 {
+			t.Fatalf("MaxFields=%d: record holds %d fields: repeated writes are not bounded", maxFields, n)
+		}
+	}
+}
+
+// The OperationStart strings join after the seal; the value limit
+// covers them like any other string field.
+func TestMaxValueBytesCutsStartStrings(t *testing.T) {
+	rt, ts := testRT(t, func(c *Config) { c.MaxValueBytes = 4 })
+	long := strings.Repeat("x", 64)
+	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: long, ID: long, Source: long})
+	op.End(nil)
+	ev := ts.Events()[0]
+	for _, key := range []string{KeyOpName, KeyOpID, KeyOpSource} {
+		if v, _ := ev.Lookup(key); v != "xxxx" {
+			t.Fatalf("%s = %v, want it cut to 4 bytes", key, v)
+		}
+	}
+	if v, _ := ev.Lookup(KeyTruncatedValues); v != int64(3) {
+		t.Fatalf("%s = %v, want 3", KeyTruncatedValues, v)
+	}
+}
+
 // Canonical fields written after the limit is reached must still land:
 // the integrations write http.status, the route, and the error last.
 func TestMaxFieldsNeverDropsCanonicalKeys(t *testing.T) {
@@ -468,6 +511,7 @@ func FuzzLimits(f *testing.F) {
 	f.Add(uint8(4), uint8(8), []byte("k1=v1;k2=vvvvvvvvvvvvvvvv;k1=x;k3=é€😀"))
 	f.Add(uint8(1), uint8(1), []byte("http.status=5;a=b;error=e"))
 	f.Add(uint8(0), uint8(0), []byte(""))
+	f.Add(uint8(0), uint8(63), []byte("a=1;op.outcome=failure;op.outcome=bogus;op.outcome=bogus"))
 	f.Fuzz(func(t *testing.T, maxFields, maxBytes uint8, program []byte) {
 		cfg := func(c *Config) {
 			c.MaxFields = int(maxFields%32) + 1
@@ -487,8 +531,10 @@ func FuzzLimits(f *testing.F) {
 		uop := Start(context.Background(), unlimitedRT, OperationStart{Domain: DomainJob, Name: "fuzz"})
 
 		// Reference model of the WAL. Every value is a string, so a
-		// canonical key the WAL holds always has a write of the same kind.
-		held := map[string]bool{}
+		// canonical write replaces a write of its key, except that a
+		// valid and an invalid op.outcome (after the cut) do not
+		// replace each other: slot tells them apart.
+		held, heldSlot := map[string]bool{}, map[string]bool{}
 		walLen, removable := 0, 0
 		saturated := false
 		var dropped, truncated int64
@@ -498,6 +544,10 @@ func FuzzLimits(f *testing.F) {
 				continue
 			}
 			canonical := isCanonicalKey(key)
+			slot := key
+			if key == KeyOpOutcome && IsValidOutcome(Outcome(truncateUTF8(value, lim.maxValueBytes))) {
+				slot += " valid"
+			}
 			kept := true
 			switch {
 			case walLen < lim.maxFields:
@@ -505,11 +555,12 @@ func FuzzLimits(f *testing.F) {
 				if held[key] && !canonical {
 					removable++
 				}
-				held[key] = true
-			case held[key]:
+				held[key], heldSlot[slot] = true, true
+			case held[key] && !canonical:
+			case canonical && heldSlot[slot]:
 			case canonical:
 				walLen++
-				held[key] = true
+				held[key], heldSlot[slot] = true, true
 			default:
 				if !saturated {
 					walLen -= removable
@@ -534,6 +585,13 @@ func FuzzLimits(f *testing.F) {
 			}
 			Add(uop.Context(), key, value)
 		}
+		// End adds the OperationStart strings the program did not
+		// write, and the value limit cuts them too.
+		for key, value := range map[string]string{KeyOpDomain: string(DomainJob), KeyOpName: "fuzz"} {
+			if !held[key] && len(value) > lim.maxValueBytes {
+				truncated++
+			}
+		}
 		if got := len(op.ev.fields); got != walLen {
 			t.Fatalf("WAL holds %d fields, model holds %d", got, walLen)
 		}
@@ -557,8 +615,8 @@ func FuzzLimits(f *testing.F) {
 				t.Fatalf("held key %q missing", key)
 			}
 		}
-		// The completion fields End appends after the written ones are
-		// unolog's own and are not limited.
+		// End appends its own fields after the written ones; the start
+		// strings among them are cut, the completion fields are not.
 		for _, field := range ev.Fields()[:written] {
 			if s, ok := field.Str(); ok {
 				if len(s) > lim.maxValueBytes {

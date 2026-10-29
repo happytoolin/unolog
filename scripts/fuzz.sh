@@ -80,11 +80,14 @@ fi
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
-# fuzzed reports whether log $1 shows that the engine ran. go test exits 0
-# without fuzzing when -fuzz matches nothing it compiled, or when a build
-# tag excludes every test file of the package ("no test files").
+# fuzzed reports whether log $1 shows that the engine fuzzed new inputs,
+# not only the seed corpus. go test exits 0 without fuzzing when -fuzz
+# matches nothing it compiled, or when a build tag excludes every test
+# file of the package ("no test files"). The engine prints "fuzz:
+# elapsed:" while it still runs the seed corpus, and a short -fuzztime
+# can end there.
 fuzzed() {
-	grep -q '^fuzz: elapsed:' "$1"
+	grep -qE '^fuzz: elapsed: .*(now fuzzing with|execs: )' "$1"
 }
 
 # deadline_only reports whether the failed run in log $1 is only the fuzz
