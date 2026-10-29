@@ -2,6 +2,8 @@ package benches_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -145,6 +147,20 @@ func BenchmarkOperationLifecycleDroppedNoFields(b *testing.B) {
 	for b.Loop() {
 		op := unolog.Start(context.Background(), rt, unolog.OperationStart{})
 		op.End(nil)
+	}
+}
+
+// BenchmarkOperationLifecycleError is the failure path: End builds the
+// structured error field (message, type, and the root cause) from a
+// wrapped error.
+func BenchmarkOperationLifecycleError(b *testing.B) {
+	rt := runtimeFor()
+	wrapped := fmt.Errorf("query: %w", errors.New("db down"))
+	b.ReportAllocs()
+	for b.Loop() {
+		err := wrapped
+		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "sync"})
+		op.End(&err)
 	}
 }
 

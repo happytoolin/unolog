@@ -48,6 +48,14 @@ coverage:
     (cd "$moddir" && go test ./... -cover); \
   done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
+# Fuzz every target in every module (or only the given package dirs).
+fuzz time='30s' *dirs:
+  scripts/fuzz.sh -t {{time}} {{dirs}}
+
+# List every fuzz target as "package-dir target".
+fuzz-list:
+  scripts/fuzz.sh -l
+
 bench:
   (cd benches && go test -run '^$' -bench . -benchmem ./...)
 

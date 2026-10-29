@@ -47,6 +47,8 @@ Add business fields through the operation context:
 
 ```go
 unolog.Add(ctx, "user_id", userID, "feature", "checkout")
+// On hot paths with dynamic values, use typed fields: no allocation.
+unolog.AddFields(ctx, unolog.String("user_id", userID), unolog.Int("items", len(items)))
 ```
 
 Use `unolog.Error(ctx, err)` only when an error is handled and will not reach the integration. Use `unolog.SetMessage` for a useful final event name. Use `unolog.SetLevel` only when the operation needs a higher severity than its resolved outcome.

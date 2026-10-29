@@ -131,8 +131,27 @@ jobs:
             )
           done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
-  fuzz:
+  fuzz-targets:
     runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.list.outputs.dirs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      # The script finds every package with a Fuzz function, so a new
+      # target joins this matrix without a workflow edit.
+      - name: List packages with fuzz targets
+        id: list
+        run: echo "dirs=$(scripts/fuzz.sh -j)" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: fuzz-targets
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.fuzz-targets.outputs.dirs) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -140,47 +159,23 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6.2.0
         with:
+          # The module floor: the encoder oracles also run against the
+          # pre-v2 encoding/json engine here.
           go-version: '1.25.x'
           check-latest: true
           cache: true
+          cache-dependency-path: '**/go.sum'
 
       # 60s per target comfortably exceeds the 1M-exec gate (~200k
       # execs/s for these oracles locally); increase if CI runners
-      # regress. Numeric/time/interface oracles and the record-level
-      # dedupe fuzz follow the DST research plan (P2/P4).
-      - name: Fuzz JSON encoder (SWAR vs zerolog table)
-        shell: bash
-        run: |
-          set -euo pipefail
-          go test ./internal/json -run '^$' -fuzz '^FuzzAppendString$' -fuzztime 60s
-          go test ./internal/json -run '^$' -fuzz '^FuzzAppendBytes$' -fuzztime 60s
+      # regress.
+      - name: Fuzz ${{ matrix.dir }}
+        run: scripts/fuzz.sh -t 60s "${{ matrix.dir }}"
 
-      - name: Fuzz JSON numeric, time and interface paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          go test ./internal/json -run '^$' -fuzz '^FuzzAppendFloat64$' -fuzztime 60s
-          go test ./internal/json -run '^$' -fuzz '^FuzzAppendFloat32$' -fuzztime 60s
-          go test ./internal/json -run '^$' -fuzz '^FuzzAppendTimeRFC3339$' -fuzztime 60s
-          go test ./internal/json -run '^$' -fuzz '^FuzzAppendInterface$' -fuzztime 60s
-
-      - name: Fuzz record encode (dedupe LWW + canonical collisions)
-        shell: bash
-        run: |
-          set -euo pipefail
-          go test . -run '^$' -fuzz '^FuzzRecordEncodedDedupe$' -fuzztime 60s
-
-      - name: Fuzz core lifecycle, dedupe and config paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          go test . -run '^$' -fuzz '^FuzzEndLifecycle$' -fuzztime 60s
-          go test . -run '^$' -fuzz '^FuzzDedupeFields$' -fuzztime 60s
-          go test . -run '^$' -fuzz '^FuzzCompileConfig$' -fuzztime 60s
-          go test . -run '^$' -fuzz '^FuzzErrorGraph$' -fuzztime 60s
-          go test . -run '^$' -fuzz '^FuzzCrashAdversarialValues$' -fuzztime 60s
-          go test . -run '^$' -fuzz '^FuzzCrashGuardedSequences$' -fuzztime 60s
-
-      - name: Fuzz net/http middleware state machine
-        working-directory: integration/std
-        run: go test . -run '^$' -fuzz '^FuzzMiddlewareRequest$' -fuzztime 60s
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failures-${{ strategy.job-index }}
+          path: ${{ matrix.dir }}/testdata/fuzz/
+          if-no-files-found: ignore

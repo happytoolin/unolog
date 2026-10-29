@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
+	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strconv"
@@ -52,6 +54,15 @@ func BenchmarkJSONSinkLifecycle(b *testing.B) {
 		for b.Loop() {
 			op := unolog.Start(context.Background(), rt, unolog.OperationStart{})
 			op.End(nil)
+		}
+	})
+	b.Run("wrapped_error", func(b *testing.B) {
+		wrapped := fmt.Errorf("query: %w", errors.New("db down"))
+		b.ReportAllocs()
+		for b.Loop() {
+			err := wrapped
+			op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "sync"})
+			op.End(&err)
 		}
 	})
 }

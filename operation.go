@@ -48,7 +48,7 @@ func Start(ctx context.Context, rt *Runtime, start OperationStart) *Operation {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ev := newEvent()
+	ev := newEvent(rt.eventLimits())
 	op := &Operation{
 		rt:    rt,
 		start: normalizedOperationStart(start),
@@ -73,10 +73,12 @@ func (op *Operation) Context() context.Context {
 // End finalizes the operation from the deferred error pointer and panic
 // state, committing exactly one event, and returns whether an event was
 // emitted. One-shot: a second call is a no-op returning the first
-// result (false, by definition, if the first call crashed mid-commit —
-// a panic in the sampler or a sink never publishes an emission). If the
-// surrounding function is panicking, End records the panic, commits,
-// and re-panics.
+// result. If the surrounding function is panicking, End records the
+// panic, commits, and re-panics with the original value.
+//
+// A panicking Sink or Sampler never escapes End: the panic is reported
+// to Config.ErrorHandler as a *PanicError. A sampler panic keeps the
+// event; a sink panic makes End report false.
 //
 // End MUST be deferred directly (defer op.End(&err)) — the closure form
 // silently disables panic capture. Reentrant use is not supported: a
@@ -302,7 +304,7 @@ func (op *Operation) commit(in *commitInput) bool {
 		sampleIn := buildSampleInput(ev, start, in, level)
 		if !sampleIn.HasError {
 			if rt.sampler != nil {
-				if !rt.sampler(sampleIn) {
+				if !rt.sample(sampleIn) {
 					return false
 				}
 			} else if !shouldWriteHealthy(rt, policy, sampleIn) {
@@ -319,8 +321,7 @@ func (op *Operation) commit(in *commitInput) bool {
 	rec.msg = resolveEventMessage(rt.message, start.Domain, ev.msg)
 	rec.fields = ev.fields
 	rec.completedAt = in.now
-	rt.emit(op.ctx, rec)
-	return true
+	return rt.emit(op.ctx, rec)
 }
 
 // shouldWriteHealthy applies the compiled rate configuration for
@@ -398,6 +399,12 @@ func (op *Operation) annotatePostSeal(in *commitInput) {
 		add(fieldInt64(KeyOpCode, int64(in.scan.opCode)))
 	}
 	add(fieldStr(KeyOpOutcome, string(in.outcome)))
+	if ev.dropped > 0 {
+		add(fieldInt64(KeyDroppedFields, ev.dropped))
+	}
+	if ev.truncated > 0 {
+		add(fieldInt64(KeyTruncatedValues, ev.truncated))
+	}
 	ev.fields = fields
 }
 

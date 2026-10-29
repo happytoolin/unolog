@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+// unlimited is a testRT mutator that removes the event limits, for
+// tests whose subject is an event wider or longer than the defaults.
+func unlimited(c *Config) {
+	c.MaxFields = -1
+	c.MaxValueBytes = -1
+}
+
 func testRT(t *testing.T, mut func(*Config)) (*Runtime, *TestSink) {
 	t.Helper()
 	cfg := Config{Sink: NewTestSink(), SamplingRate: 1}
@@ -615,6 +622,7 @@ func (f sinkFunc) Write(ctx context.Context, rec *Record) { f(ctx, rec) }
 func TestSinkPanicDoesNotLeakPool(t *testing.T) {
 	rt, _ := testRT(t, func(c *Config) {
 		c.Sink = sinkFunc(func(context.Context, *Record) { panic("sink exploded") })
+		c.ErrorHandler = func(error) {}
 	})
 	func() {
 		defer func() { _ = recover() }()
@@ -979,14 +987,16 @@ func eventMember(t *testing.T, ev lifeCapture, key string) (map[string]any, bool
 }
 
 // TestSinkPanicPermutations: a panicking sink (payload from the table)
-// with and without an in-flight handler panic. The sink panic replaces
-// the in-flight panic (documented) and must not corrupt the pool.
+// with and without an in-flight handler panic. The sink panic is
+// contained and reported; only the handler's own panic escapes End,
+// with its original value. The pool must stay clean.
 func TestSinkPanicPermutations(t *testing.T) {
 	for _, p := range panicPayloads() {
 		run := func(t *testing.T, handlerPanic any) {
 			t.Helper()
 			sink := &captureThenPanicSink{payload: p.value}
-			rt := MustCompile(Config{Sink: sink, SamplingRate: 1})
+			var reported []error
+			rt := MustCompile(Config{Sink: sink, SamplingRate: 1, ErrorHandler: func(err error) { reported = append(reported, err) }})
 			op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "sink-panic"})
 			Add(op.Context(), "k", "v")
 
@@ -994,25 +1004,30 @@ func TestSinkPanicPermutations(t *testing.T) {
 			func() {
 				defer func() { escaped = recover() }()
 				if handlerPanic != nil {
-					// An in-flight handler panic: the sink panic replaces
-					// it (documented in End's comment) — the sink payload
-					// escapes, not the handler's.
 					defer op.End(nil)
 					panic(handlerPanic)
 				}
 				op.End(nil)
 			}()
-			if escaped == nil {
-				t.Fatal("sink panic did not escape End")
+			if escaped != handlerPanic {
+				t.Fatalf("escaped %#v, want the handler panic %#v", escaped, handlerPanic)
+			}
+			if len(reported) != 1 || !errors.Is(reported[0], ErrSinkPanic) {
+				t.Fatalf("reported = %v, want one ErrSinkPanic", reported)
+			}
+			var pe *PanicError
+			if !errors.As(reported[0], &pe) {
+				t.Fatalf("reported %T, want *PanicError", reported[0])
 			}
 			if p.value == nil {
-				// sink panics with panic(nil) → PanicNilError wrapper
-				if _, ok := escaped.(error); !ok {
-					t.Fatalf("escaped %T", escaped)
+				// panic(nil) recovers as *runtime.PanicNilError.
+				if _, ok := pe.Value.(error); !ok {
+					t.Fatalf("PanicError.Value %T", pe.Value)
 				}
-			} else if escaped != p.value {
-				t.Fatalf("escaped %#v, want sink payload %#v (handler panic %#v replaced)", escaped, p.value, handlerPanic)
+			} else if pe.Value != p.value {
+				t.Fatalf("PanicError.Value %#v, want sink payload %#v", pe.Value, p.value)
 			}
+			_ = pe.Error() // must not panic for any payload
 			if len(sink.captured) != 1 {
 				t.Fatalf("sink captured %d records", len(sink.captured))
 			}
@@ -1034,7 +1049,7 @@ func TestSinkPanicPermutations(t *testing.T) {
 			}
 		}
 		t.Run(p.name, func(t *testing.T) { run(t, nil) })
-		t.Run(p.name+"-replaces-handler-panic", func(t *testing.T) { run(t, "handler-panic") })
+		t.Run(p.name+"-keeps-handler-panic", func(t *testing.T) { run(t, "handler-panic") })
 	}
 }
 

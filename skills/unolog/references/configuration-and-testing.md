@@ -53,6 +53,26 @@ Errors, panics, and server failures bypass sampling structurally. Do not add a s
 
 Use `OperationPolicies` only when domains need different levels or rates. Do not add policy maps for one global rate.
 
+## Limits and failure handling
+
+The defaults bound every event: `DefaultMaxFields` (256) fields and `DefaultMaxValueBytes` (32 KiB) per string value. Keep them unless the user has a measured need. Set a larger value for an event that is wide by design. Set `-1` to remove a limit; do this only for trusted, bounded input.
+
+```go
+rt, err := unolog.Compile(unolog.Config{
+	Sink:          sink,
+	SamplingRate:  1,
+	MaxFields:     512,     // a deliberately wide event
+	MaxValueBytes: 8 << 10, // a pipeline with an 8 KiB field limit
+	ErrorHandler: func(err error) {
+		metrics.Inc("unolog_internal_errors")
+	},
+})
+```
+
+At the field limit, a write to an existing key replaces its value, so a progress counter stays correct. A new key is dropped and counted in `unolog.dropped_fields`. Canonical keys are never dropped. A cut value is counted in `unolog.truncated_values`. Treat either field in production output as a signal to fix the code or raise the limit.
+
+A panicking sink or sampler does not escape `End`. unolog reports it to `ErrorHandler` as a `*unolog.PanicError` (with the stack), keeps the event on a sampler panic, and drops it on a sink panic. The default handler writes to stderr at most once per second. Do not wrap sinks in your own `recover`.
+
 ## Test with TestSink
 
 Test observable event behavior without parsing logger output:

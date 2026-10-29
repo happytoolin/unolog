@@ -141,6 +141,9 @@ use `unolog.Compile` for config from files, `unolog.MustCompile` for literals.
 - `OperationPolicies`: optional per-domain level/sampling policy for all lifecycle domains, including HTTP and background operations; domain sampling overrides generic level/default sampling
 - Precedence when both are set: a domain policy's `SamplingRate` overrides `LevelSamplingRates` for that domain (v0 behavior); `LevelSamplingRates` overrides the global `SamplingRate`
 - `Message`: final log message (defaults to `unolog.DefaultMessage` for HTTP and `unolog.DefaultOperationMessage` for non-HTTP)
+- `MaxFields`: fields one event can hold (default `unolog.DefaultMaxFields`, 256; `-1` removes the limit)
+- `MaxValueBytes`: bytes per string value (default `unolog.DefaultMaxValueBytes`, 32 KiB; `-1` removes the limit)
+- `ErrorHandler`: receives contained sink and sampler panics (default: stderr, at most once per second)
 
 Notes:
 
@@ -148,6 +151,41 @@ Notes:
 - If no sink is configured, requests still run; logging is skipped.
 - Sampling behavior is consistent across all integrations (`net/http`, `gin`, `echo`, `fiber`, and `fiber v3`).
 - `unolog.SetMessage(ctx, "...")` overrides `Config.Message` for a single event.
+
+### Limits and failure handling
+
+Every event is bounded by default, so one request cannot grow without limit
+or write a line that a log pipeline splits or rejects:
+
+- **Field limit.** At `MaxFields`, a write to a key the event already holds
+  replaces its value in place, so a counter updated in a loop stays correct.
+  A write with a new key is dropped and counted in `unolog.dropped_fields`.
+  Canonical keys (`http.*`, `op.*`, `error`, `panic`) are never dropped.
+- **Value limit.** String values longer than `MaxValueBytes` are cut at a
+  UTF-8 boundary and counted in `unolog.truncated_values`. This covers string
+  fields, the string members of `map[string]any` fields (so the structured
+  `error` and `panic` fields), and the `SetMessage` text.
+
+The two counter fields appear only when a limit changed the event. Treat
+them as a signal to fix the code or to raise the limit.
+
+Logging never crashes the request. A panicking `Sink` or `Sampler` does not
+escape `End`: unolog contains it and reports a `*unolog.PanicError` (the
+recovered value and its stack; `errors.Is` matches `unolog.ErrSinkPanic` or
+`unolog.ErrSamplerPanic`) to `ErrorHandler`. A sampler panic keeps the event;
+a sink panic makes `End` return `false`. The application's own panic still
+re-panics with its original value.
+
+```go
+rt, err := unolog.Compile(unolog.Config{
+	Sink:          sink,
+	SamplingRate:  1,
+	MaxValueBytes: 8 << 10, // match an 8 KiB pipeline field limit
+	ErrorHandler: func(err error) {
+		internalErrors.Inc() // export as a metric instead of stderr
+	},
+})
+```
 
 ### Per-request Message Override
 
@@ -221,6 +259,22 @@ mw := std.Middleware(unolog.MustCompile(unolog.Config{
 
 `unolog.Add` accepts one or more key/value pairs:
 `unolog.Add(ctx, "k1", v1, "k2", v2, "k3", v3)`.
+
+`Add` boxes each value into an `interface{}`, which allocates for most
+dynamic values. On hot paths, use typed fields instead: `AddFields` does not
+allocate.
+
+```go
+unolog.AddFields(ctx,
+	unolog.String("user_id", userID),
+	unolog.Int("items", len(cart.Items)),
+	unolog.Duration("db_time", dbTime),
+)
+```
+
+The constructors are `String`, `Int`, `Int64`, `Uint64`, `Float64`, `Bool`,
+`Time`, `Duration`, and `Any` (the `Add` type mapping). Both forms produce the
+same wire output.
 
 `unolog.SampleInput.Method`, `Path`, and `StatusCode` are HTTP compatibility fields.
 For non-HTTP operations use `Domain`, `Operation`, `Outcome`, and `Code`.

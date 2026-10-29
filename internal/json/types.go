@@ -173,8 +173,15 @@ func (Encoder) AppendFloat64(dst []byte, val float64, precision int) []byte {
 }
 
 // AppendInterface marshals the input interface to a string and
-// appends the encoded string to the input byte slice.
+// appends the encoded string to the input byte slice. Small string-only
+// maps (the structured error and panic fields) take a reflection-free
+// path with identical output.
 func (e Encoder) AppendInterface(dst []byte, i any) []byte {
+	if m, ok := i.(map[string]any); ok {
+		if out, ok := appendStringMap(dst, m); ok {
+			return out
+		}
+	}
 	marshaled, err := jsonMarshal(i)
 	if err != nil {
 		return e.AppendString(dst, fmt.Sprintf("marshaling error: %v", err))

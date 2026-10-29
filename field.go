@@ -171,9 +171,44 @@ func fieldOf(key string, value any) Field {
 	}
 }
 
+// Typed field constructors for AddFields. They store the value in its
+// typed slot, so a dynamic value is not boxed into an interface: no
+// allocation, unlike passing the same value to Add.
+
+// String returns a string field.
+func String(key, value string) Field { return Field{key: key, kind: KindString, str: value} }
+
+// Int returns an integer field.
+func Int(key string, value int) Field { return Field{key: key, kind: KindInt, num: int64(value)} }
+
+// Int64 returns an integer field.
+func Int64(key string, value int64) Field { return Field{key: key, kind: KindInt, num: value} }
+
+// Uint64 returns an unsigned integer field.
+func Uint64(key string, value uint64) Field {
+	return Field{key: key, kind: KindUint, num: int64(value)}
+}
+
+// Float64 returns a float field.
+func Float64(key string, value float64) Field { return Field{key: key, kind: KindFloat, f: value} }
+
+// Bool returns a boolean field.
+func Bool(key string, value bool) Field { return Field{key: key, kind: KindBool, b: value} }
+
+// Time returns a time field.
+func Time(key string, value time.Time) Field { return Field{key: key, kind: KindTime, t: value} }
+
+// Duration returns a duration field.
+func Duration(key string, value time.Duration) Field {
+	return Field{key: key, kind: KindDuration, num: int64(value)}
+}
+
+// Any returns a field for value with the same type mapping Add uses.
+func Any(key string, value any) Field { return fieldOf(key, value) }
+
 // Typed field constructors for the canonical annotations (no boxing).
-func fieldStr(key, value string) Field     { return Field{key: key, kind: KindString, str: value} }
-func fieldInt64(key string, v int64) Field { return Field{key: key, kind: KindInt, num: v} }
+func fieldStr(key, value string) Field     { return String(key, value) }
+func fieldInt64(key string, v int64) Field { return Int64(key, v) }
 
 // valueOf converts a Field back to an any, mirroring the v0 map-based
 // values (used by Lookup and the TestSink).

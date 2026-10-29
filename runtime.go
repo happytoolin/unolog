@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 )
 
@@ -48,6 +49,32 @@ type Config struct {
 	// Message is the default final message, overriding the per-domain
 	// defaults (request_completed / operation_completed).
 	Message string
+
+	// MaxFields bounds the fields one event holds while it runs, so a
+	// request that calls Add in a loop cannot grow without limit. Zero
+	// selects DefaultMaxFields; a negative value removes the limit. At
+	// the limit, a write to a key the event already holds replaces that
+	// value in place, and a write with a new key is dropped and counted
+	// in the unolog.dropped_fields field. Canonical keys (the Key*
+	// constants) are never dropped, and the completion fields End adds
+	// do not count.
+	MaxFields int
+
+	// MaxValueBytes bounds each string value: string fields, string
+	// members of map[string]any fields (which covers the structured
+	// error and panic fields), and the SetMessage text. Longer values
+	// are cut at a UTF-8 boundary and counted in the
+	// unolog.truncated_values field. Other value types are not cut.
+	// Zero selects DefaultMaxValueBytes; a negative value removes the
+	// limit.
+	MaxValueBytes int
+
+	// ErrorHandler receives the failures unolog contains instead of
+	// crashing the caller: a panicking Sink or Sampler, reported as a
+	// *PanicError. Nil selects the default, which writes the error and
+	// its stack to os.Stderr at most once per second. The handler runs
+	// synchronously inside End and must not panic.
+	ErrorHandler func(error)
 }
 
 // Runtime is the immutable, compiled form of Config, shared by all
@@ -59,6 +86,9 @@ type Runtime struct {
 	levelRates map[Level]float64
 	policies   map[Domain]OperationPolicy
 	message    string
+	limits     limits
+	onError    func(error)
+	reporter   *rateLimitedReporter
 
 	// alwaysKeep is the compiled keep-everything fast path: rate
 	// exactly 1.0 with no sampler, per-level rates, or policies means
@@ -77,6 +107,14 @@ func Compile(cfg Config) (*Runtime, error) {
 		sampler: cfg.Sampler,
 		message: cfg.Message,
 		rate:    cfg.SamplingRate,
+		limits: limits{
+			maxFields:     limitOrDefault(cfg.MaxFields, DefaultMaxFields),
+			maxValueBytes: limitOrDefault(cfg.MaxValueBytes, DefaultMaxValueBytes),
+		},
+		onError: cfg.ErrorHandler,
+	}
+	if rt.onError == nil {
+		rt.reporter = newStderrReporter()
 	}
 
 	if !(rt.rate >= 0 && rt.rate <= 1) {
@@ -231,11 +269,55 @@ func (rt *Runtime) policyFor(domain Domain) OperationPolicy {
 	return OperationPolicy{}
 }
 
-// Emit writes rec to the configured sink. The nil-runtime and nil-sink
-// cases are no-ops by contract.
-func (rt *Runtime) emit(ctx context.Context, rec *Record) {
-	if rt.noop() {
-		return
+// eventLimits returns the per-event limits. A nil or uncompiled
+// runtime uses the defaults: it emits nothing, but the request still
+// runs and its event must stay bounded.
+func (rt *Runtime) eventLimits() limits {
+	if rt == nil || rt.limits.maxFields == 0 {
+		return defaultLimits
 	}
+	return rt.limits
+}
+
+// limitOrDefault maps the Config convention onto a compiled limit:
+// zero selects def, a negative value removes the limit.
+func limitOrDefault(v, def int) int {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return math.MaxInt
+	default:
+		return v
+	}
+}
+
+// sample runs the custom sampler. A panicking sampler keeps the event:
+// a broken sampler must not hide data. The panic is reported, not
+// re-raised.
+func (rt *Runtime) sample(in SampleInput) (keep bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			rt.reportPanic(ErrSamplerPanic, r)
+			keep = true
+		}
+	}()
+	return rt.sampler(in)
+}
+
+// emit writes rec to the configured sink and reports whether the sink
+// returned. A sink panic is contained and reported: logging must not
+// crash the request. The nil-runtime and nil-sink cases are no-ops.
+func (rt *Runtime) emit(ctx context.Context, rec *Record) (ok bool) {
+	if rt.noop() {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			rt.reportPanic(ErrSinkPanic, r)
+			ok = false
+		}
+	}()
 	rt.sink.Write(ctx, rec)
+	return true
 }

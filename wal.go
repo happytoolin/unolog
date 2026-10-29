@@ -47,9 +47,15 @@ type event struct {
 	fields []Field // append-only, insertion order; backing array owned for pooling
 	msg    string
 
-	hasErr          bool
 	requestedLevel  Level
+	hasErr          bool // the bools share one word after requestedLevel
 	hasRequestedLvl bool
+
+	// limits bound the WAL; dropped and truncated count the writes the
+	// limits changed. All three are read and written under mu.
+	limits    limits
+	dropped   int64
+	truncated int64
 
 	startedAt time.Time
 }
@@ -69,9 +75,9 @@ type walRef struct {
 	gen uint64
 }
 
-func newEvent() *event {
+func newEvent(lim limits) *event {
 	ev := eventPool.Get().(*event) //nolint:forcetypeassert // the pool's New stores exactly *event
-	ev.reset()
+	ev.reset(lim)
 	return ev
 }
 
@@ -79,7 +85,7 @@ func newEvent() *event {
 // mutex as appends, seals, and snapshots: a stale watchdog snapshot can
 // hold the lock with a matching old generation, and without the lock
 // the reset would truncate the fields under its copy.
-func (e *event) reset() {
+func (e *event) reset(lim limits) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	s := e.state.Add(walGenOne) // new generation; any straggler now mismatches
@@ -90,6 +96,9 @@ func (e *event) reset() {
 	e.hasErr = false
 	e.requestedLevel = 0
 	e.hasRequestedLvl = false
+	e.limits = lim
+	e.dropped = 0
+	e.truncated = 0
 	e.startedAt = time.Now()
 }
 
@@ -114,9 +123,81 @@ func (e *event) append(gen uint64, f Field) {
 	}
 	e.mu.Lock()
 	if cur := e.state.Load(); cur>>walStateBits == gen && walState(cur&walStateMask) == walActive {
-		e.fields = append(e.fields, f)
+		if e.fits(len(f.str), f.kind) {
+			e.fields = append(e.fields, f)
+		} else {
+			e.pushLimited(&f)
+		}
 	}
 	e.mu.Unlock()
+}
+
+// push appends f under the event limits. The caller holds mu and has
+// verified the generation. Hot callers repeat these lines inline: a
+// call here costs a copy of f and the call itself on every write.
+func (e *event) push(f Field) {
+	if e.fits(len(f.str), f.kind) {
+		e.fields = append(e.fields, f)
+		return
+	}
+	e.pushLimited(&f)
+}
+
+// fits reports whether a field can be appended as is: the event has
+// room, and the value is not one the byte limit could cut. strLen is
+// len(f.str); only KindString fields carry str, so the check covers
+// every kind but KindAny. It takes scalars, not the Field: an inlined
+// struct parameter costs a stack copy of the whole Field.
+func (e *event) fits(strLen int, kind FieldKind) bool {
+	return len(e.fields) < e.limits.maxFields && strLen <= e.limits.maxValueBytes && kind != KindAny
+}
+
+// pushLimited is push for a full event or a value that may need a cut.
+// At the field limit, an existing key takes the new value in place
+// (its position stays), a canonical key is appended once, and any
+// other new key is dropped and counted. It takes a pointer so the hot
+// callers do not reserve stack space to pass a Field, and it copies
+// *p before a cut, so the caller's Field never changes.
+func (e *event) pushLimited(p *Field) {
+	f := *p
+	if len(e.fields) < e.limits.maxFields {
+		e.limitValue(&f)
+		e.fields = append(e.fields, f)
+		return
+	}
+	for i := len(e.fields) - 1; i >= 0; i-- {
+		if e.fields[i].key == f.key {
+			e.limitValue(&f)
+			e.fields[i] = f
+			return
+		}
+	}
+	if !isCanonicalKey(f.key) {
+		e.dropped++
+		return
+	}
+	e.limitValue(&f)
+	e.fields = append(e.fields, f)
+}
+
+// limitValue cuts the string content of f to the byte limit in place
+// and counts each cut. The caller holds mu.
+func (e *event) limitValue(f *Field) {
+	switch f.kind {
+	case KindString:
+		if len(f.str) > e.limits.maxValueBytes {
+			f.str = truncateUTF8(f.str, e.limits.maxValueBytes)
+			e.truncated++
+		}
+	case KindAny:
+		if m, ok := f.val.(map[string]any); ok {
+			if limited, cuts := limitMapStrings(m, e.limits.maxValueBytes); cuts > 0 {
+				f.val = limited
+				e.truncated += int64(cuts)
+			}
+		}
+	default:
+	}
 }
 
 // addKV appends the leading pair plus any well-formed kv pairs
@@ -135,14 +216,45 @@ func (e *event) addKV(ref *walRef, key string, value any, kv ...any) {
 	// fieldOf only inspects types: one lock covers the whole batch without
 	// calling user code while locked.
 	if key != "" {
-		e.fields = append(e.fields, fieldOf(key, value))
+		if f := fieldOf(key, value); e.fits(len(f.str), f.kind) {
+			e.fields = append(e.fields, f)
+		} else {
+			e.pushLimited(&f)
+		}
 	}
 	for i := 0; i+1 < len(kv); i += 2 {
 		k, ok := kv[i].(string)
 		if !ok || k == "" {
 			continue
 		}
-		e.fields = append(e.fields, fieldOf(k, kv[i+1]))
+		if f := fieldOf(k, kv[i+1]); e.fits(len(f.str), f.kind) {
+			e.fields = append(e.fields, f)
+		} else {
+			e.pushLimited(&f)
+		}
+	}
+}
+
+// addFields appends typed fields under one lock. Fields with an empty
+// key, including the zero Field, are skipped like Add's empty keys.
+func (e *event) addFields(gen uint64, fields []Field) {
+	s := e.state.Load()
+	if s>>walStateBits != gen || walState(s&walStateMask) == walSealed {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cur := e.state.Load(); cur>>walStateBits != gen || walState(cur&walStateMask) != walActive {
+		return
+	}
+	for i := range fields {
+		switch f := &fields[i]; {
+		case f.key == "":
+		case e.fits(len(f.str), f.kind):
+			e.fields = append(e.fields, *f)
+		default:
+			e.pushLimited(f)
+		}
 	}
 }
 
@@ -175,7 +287,7 @@ func (e *event) setError(ref *walRef, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if cur := e.state.Load(); cur>>walStateBits == ref.gen && walState(cur&walStateMask) == walActive {
-		e.fields = append(e.fields, field)
+		e.push(field)   // error is a canonical key: never dropped
 		e.hasErr = true // only when the write belonged to this generation
 	}
 }
@@ -193,6 +305,10 @@ func (e *event) setMessage(ref *walRef, msg string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if cur := e.state.Load(); cur>>walStateBits == ref.gen && walState(cur&walStateMask) == walActive {
+		if len(msg) > e.limits.maxValueBytes {
+			msg = truncateUTF8(msg, e.limits.maxValueBytes)
+			e.truncated++
+		}
 		e.msg = msg
 	}
 }

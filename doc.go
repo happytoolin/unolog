@@ -8,4 +8,8 @@
 // Compile (bad configuration is a construction-time error) and shared
 // by all requests. Sampling drops healthy traffic by rate or custom
 // Sampler; error and panic events always bypass it.
+//
+// Every event is bounded (Config.MaxFields, Config.MaxValueBytes, with
+// defaults), and a panicking Sink or Sampler is contained and reported
+// to Config.ErrorHandler instead of crashing the request.
 package unolog

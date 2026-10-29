@@ -490,17 +490,16 @@ func TestFanoutSinkPanicIsolation(t *testing.T) {
 				}
 				sinks[panicIdx] = panicSink{}
 				ts := NewFanoutSink(sinks...)
-				rt := MustCompile(Config{Sink: ts, SamplingRate: 1})
+				var reported []error
+				rt := MustCompile(Config{Sink: ts, SamplingRate: 1, ErrorHandler: func(err error) { reported = append(reported, err) }})
 				op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "fan"})
 				Add(op.Context(), "k", "v")
 
-				var escaped any
-				func() {
-					defer func() { escaped = recover() }()
-					op.End(nil)
-				}()
-				if escaped == nil {
-					t.Fatal("the panicking sink's panic did not escape")
+				if op.End(nil) {
+					t.Fatal("End reported an emission through a panicking sink")
+				}
+				if len(reported) != 1 || !errors.Is(reported[0], ErrSinkPanic) {
+					t.Fatalf("reported = %v, want one ErrSinkPanic", reported)
 				}
 				// every non-panicking member received the record
 				for i, c := range captures {
@@ -529,24 +528,22 @@ func TestFanoutSinkPanicIsolation(t *testing.T) {
 	}
 }
 
-// TestFanoutAllPanicking: when every member panics the caller sees the
-// first panic, and the request still does not corrupt the pool.
+// TestFanoutAllPanicking: when every member panics the error handler
+// sees the first panic, and the request still does not corrupt the pool.
 func TestFanoutAllPanicking(t *testing.T) {
 	for _, n := range []int{2, 4} {
 		sinks := make([]Sink, n)
 		for i := range sinks {
 			sinks[i] = panicSink{}
 		}
-		rt := MustCompile(Config{Sink: NewFanoutSink(sinks...), SamplingRate: 1})
+		var reported []error
+		rt := MustCompile(Config{Sink: NewFanoutSink(sinks...), SamplingRate: 1, ErrorHandler: func(err error) { reported = append(reported, err) }})
 		op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "all-panic"})
 		Add(op.Context(), "k", 1)
-		var escaped any
-		func() {
-			defer func() { escaped = recover() }()
-			op.End(nil)
-		}()
-		if escaped == nil || escaped != "sink exploded" {
-			t.Fatalf("escaped %v", escaped)
+		op.End(nil)
+		var pe *PanicError
+		if len(reported) != 1 || !errors.As(reported[0], &pe) || pe.Value != "sink exploded" {
+			t.Fatalf("reported %v", reported)
 		}
 		// pool clean: the next request works
 		ok := NewTestSink()
