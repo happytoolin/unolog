@@ -185,6 +185,25 @@ func TestMustCompileLiteralOK(t *testing.T) {
 	}
 }
 
+// levelFloor raises the level to a valid requested level. It ignores a
+// request that is unset or invalid.
+func TestLevelFloor(t *testing.T) {
+	for _, c := range []struct {
+		auto, requested Level
+		has             bool
+		want            Level
+	}{
+		{LevelDebug, LevelInfo, false, LevelDebug},
+		{LevelDebug, LevelWarn, true, LevelWarn},
+		{LevelError, LevelWarn, true, LevelError},
+		{LevelInfo, Level(99), true, LevelInfo},
+	} {
+		if got := levelFloor(c.auto, c.requested, c.has); got != c.want {
+			t.Errorf("levelFloor(%v, %v, %t) = %v, want %v", c.auto, c.requested, c.has, got, c.want)
+		}
+	}
+}
+
 func TestLevelString(t *testing.T) {
 	cases := map[Level]string{
 		LevelDebug: "DEBUG",
@@ -244,6 +263,46 @@ func TestPolicyOutcomeLevelsCanSelectInfo(t *testing.T) {
 	}
 	if got := levelFromPolicy(OperationPolicy{FailureLevel: LevelInfo}, OutcomeFailure); got != LevelError {
 		t.Fatalf("zero FailureLevel = %v, want the ERROR default", got)
+	}
+}
+
+// Each policy level field selects the level of its outcome.
+func TestLevelFromPolicyFields(t *testing.T) {
+	policy := OperationPolicy{SuccessLevel: LevelDebug, FailureLevel: LevelWarn, PanicLevel: LevelWarn}
+	for outcome, want := range map[Outcome]Level{
+		OutcomeSuccess: LevelDebug, OutcomeFailure: LevelWarn, OutcomeTimeout: LevelWarn, OutcomePanic: LevelWarn,
+	} {
+		if got := levelFromPolicy(policy, outcome); got != want {
+			t.Errorf("%s: level %v, want %v", outcome, got, want)
+		}
+	}
+	if got := levelFromPolicy(OperationPolicy{}, OutcomePanic); got != LevelError {
+		t.Errorf("default panic level %v, want ERROR", got)
+	}
+}
+
+// A level rate or a domain policy rate of 0 drops healthy events, also
+// when the global rate is 1.
+func TestRateOneStillAppliesLevelAndPolicyRates(t *testing.T) {
+	zero := 0.0
+	for name, mut := range map[string]func(*Config){
+		"level rate":  func(c *Config) { c.LevelSamplingRates = map[Level]float64{LevelInfo: 0} },
+		"policy rate": func(c *Config) { c.OperationPolicies = map[Domain]OperationPolicy{DomainJob: {SamplingRate: &zero}} },
+	} {
+		rt, _ := testRT(t, mut)
+		if Start(t.Context(), rt, OperationStart{Domain: DomainJob}).End(nil) {
+			t.Errorf("%s 0: healthy event kept", name)
+		}
+	}
+}
+
+// Compile rejects a domain policy rate outside [0, 1].
+func TestCompileRejectsPolicyRateOutOfRange(t *testing.T) {
+	for _, rate := range []float64{-0.5, 1.5, math.NaN()} {
+		r := rate
+		if _, err := Compile(Config{OperationPolicies: map[Domain]OperationPolicy{DomainJob: {SamplingRate: &r}}}); err == nil {
+			t.Errorf("policy SamplingRate %v: Compile returned no error", rate)
+		}
 	}
 }
 
@@ -361,6 +420,46 @@ func TestChainSamplerOrder(t *testing.T) {
 	}
 	if len(calls) != 2 || calls[0] != "a" || calls[1] != "b" {
 		t.Fatalf("middleware order = %v, want [a b] (a wraps b)", calls)
+	}
+	// A nil base drops, and a nil middleware is skipped.
+	if ChainSampler(nil, nil)(sampleIn("/x", false)) {
+		t.Fatal("nil base kept the event")
+	}
+}
+
+// KeepSlowerThan keeps a duration equal to the minimum. A negative
+// minimum is zero, so it keeps every duration.
+func TestKeepSlowerThanBoundary(t *testing.T) {
+	for _, minDuration := range []time.Duration{0, -time.Second} {
+		if !ChainSampler(NeverSampler(), KeepSlowerThan(minDuration))(SampleInput{}) {
+			t.Errorf("KeepSlowerThan(%v) dropped a zero duration", minDuration)
+		}
+	}
+	// A negative minimum is zero, not the negative value itself.
+	if ChainSampler(NeverSampler(), KeepSlowerThan(-time.Second))(SampleInput{Duration: -1}) {
+		t.Error("KeepSlowerThan(-1s) kept a negative duration")
+	}
+	if ChainSampler(NeverSampler(), KeepSlowerThan(time.Second))(SampleInput{Duration: time.Second - 1}) {
+		t.Error("KeepSlowerThan(1s) kept a shorter duration")
+	}
+}
+
+// KeepErrors keeps a Code or a StatusCode of 500 and more, and passes
+// 499 to the next sampler.
+func TestKeepErrorsStatusBoundary(t *testing.T) {
+	keep := ChainSampler(NeverSampler(), KeepErrors())
+	for _, c := range []struct {
+		in   SampleInput
+		want bool
+	}{
+		{SampleInput{Code: 499, StatusCode: 499}, false},
+		{SampleInput{Code: 500}, true},
+		{SampleInput{StatusCode: 500}, true},
+		{SampleInput{HasError: true}, true},
+	} {
+		if got := keep(c.in); got != c.want {
+			t.Errorf("KeepErrors(%+v) = %t, want %t", c.in, got, c.want)
+		}
 	}
 }
 

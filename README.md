@@ -143,7 +143,7 @@ use `unolog.Compile` for config from files, `unolog.MustCompile` for literals.
 - `Message`: final log message (defaults to `unolog.DefaultMessage` for HTTP and `unolog.DefaultOperationMessage` for non-HTTP)
 - `MaxFields`: fields one event can hold (default `unolog.DefaultMaxFields`, 256; `-1` removes the limit)
 - `MaxValueBytes`: bytes per string value (default `unolog.DefaultMaxValueBytes`, 32 KiB; `-1` removes the limit)
-- `ErrorHandler`: receives contained sink and sampler panics (default: stderr, at most once per second)
+- `ErrorHandler`: receives contained sink and sampler panics and failed sink writes (default: stderr, at most once per second)
 
 Notes:
 
@@ -154,27 +154,44 @@ Notes:
 
 ### Limits and failure handling
 
-Every event is bounded by default, so one request cannot grow without limit
-or write a line that a log pipeline splits or rejects:
+The defaults bound the two common ways an event grows, so a loop or a large
+value cannot make one request hold unbounded memory or write a line that a
+log pipeline splits or rejects:
 
-- **Field limit.** At `MaxFields`, a write to a key the event already holds
-  replaces its value in place, so a counter updated in a loop stays correct.
-  A write with a new key is dropped and counted in `unolog.dropped_fields`.
-  Canonical keys (`http.*`, `op.*`, `error`, `panic`) are never dropped.
-- **Value limit.** String values longer than `MaxValueBytes` are cut at a
-  UTF-8 boundary and counted in `unolog.truncated_values`. This covers string
-  fields, the string members of `map[string]any` fields (so the structured
-  `error` and `panic` fields), and the `SetMessage` text.
+- **Field limit.** `MaxFields` bounds the distinct keys of an event. Repeated
+  writes to one key do not use it up: when the event is full, a write to a
+  key the event holds replaces its value in place, and a write with a new key
+  first removes the older writes of repeated keys. A new key that still does
+  not fit is dropped and counted in `unolog.dropped_fields`. Canonical keys
+  (the `unolog.Key*` constants, such as `http.status`, `op.outcome`, `error`,
+  and `panic`) are never dropped. Other keys with the same prefix, such as
+  `http.user_agent`, are ordinary keys.
+- **Value limit.** `MaxValueBytes` bounds string values: string fields, the
+  string members of a `map[string]any` field (so the structured `error` and
+  `panic` fields), and the `SetMessage` text. A longer value is cut at a
+  UTF-8 boundary and counted in `unolog.truncated_values`. The text of an
+  error value added with `Add` is cut when the line is encoded; that cut is
+  not counted.
+- **Not covered.** Field keys, nested maps, slices, structs, other `any`
+  values, and the `OperationStart` fields are not limited. Keep them small,
+  or convert them to strings before you add them.
 
 The two counter fields appear only when a limit changed the event. Treat
-them as a signal to fix the code or to raise the limit.
+them as a signal to fix the code or to raise the limit. A negative limit
+removes that limit.
 
 Logging never crashes the request. A panicking `Sink` or `Sampler` does not
 escape `End`: unolog contains it and reports a `*unolog.PanicError` (the
 recovered value and its stack; `errors.Is` matches `unolog.ErrSinkPanic` or
-`unolog.ErrSamplerPanic`) to `ErrorHandler`. A sampler panic keeps the event;
-a sink panic makes `End` return `false`. The application's own panic still
-re-panics with its original value.
+`unolog.ErrSamplerPanic`) to `ErrorHandler`. A panic in `ErrorHandler` itself
+is recovered, and the report goes to stderr. A sampler panic keeps the event.
+A sink panic makes `End` return `false`, but delivery can be partial: a sink
+that writes to several destinations may have written to some of them before
+it panicked, so do not retry the write. The application's own panic still
+re-panics with its original value. A failed or short write from `JSONSink`
+(or any sink that implements `unolog.FallibleSink`) also goes to
+`ErrorHandler`, matching `unolog.ErrSinkWrite` and the writer's error, and
+`End` returns `false`.
 
 ```go
 rt, err := unolog.Compile(unolog.Config{
@@ -349,6 +366,14 @@ hooks, sampling, and rendering customization are not needed.
 Fields arrive in insertion order, deterministically, as typed
 constructors.
 
+A user field whose key the logger writes itself is renamed to
+`fields.<key>`, as the canonical line renames `message`, `time`, and
+`level`, so no output has two members with one key. The slog adapter
+renames `time`, `level`, `msg`, and `source`. The zap adapter's `New`
+renames the keys of `zap.NewProductionEncoderConfig()` (`ts`, `level`,
+`logger`, `caller`, `msg`, `stacktrace`); for an encoder with other keys,
+use `uzap.NewWithEncoderConfig(logger, encoderConfig)`.
+
 ### First-party JSON sink (no logger dependency)
 
 `unolog.NewJSONSink(w io.Writer)` emits the same canonical event shape as the
@@ -365,6 +390,28 @@ sink := unolog.NewJSONSink(os.Stdout)
 The wire format matches `zerolog.New(w).With().Timestamp().Logger()`
 through `adapter/zerolog`, so existing pipelines ingest it unchanged.
 Field order is insertion order — deterministic by construction, identical across every sink.
+A failed or short write goes to `Config.ErrorHandler`, and `End` returns
+`false`.
+
+### Asynchronous JSON sink
+
+`JSONSink` writes on the request goroutine, so a slow writer (a pipe, a
+network connection, a busy disk) makes every request wait.
+`unolog.NewAsyncJSONSink` writes the same lines from one background
+goroutine: the request only copies its line into a buffer.
+
+```go
+sink := unolog.NewAsyncJSONSink(os.Stdout, unolog.AsyncJSONSinkConfig{
+	BufferBytes: 1 << 20, // the default; memory use is at most twice this
+})
+defer sink.Close() // writes the remaining lines and stops the goroutine
+```
+
+The sink never blocks a request. When the buffer is full, it drops the
+line, counts it in `sink.Dropped()`, and reports the drops to its
+`ErrorHandler` (`unolog.ErrSinkFull`). Write errors and writer panics go to
+the same handler. `Flush(ctx)` waits until the buffered lines are written.
+Use `JSONSink` instead when every line must be written.
 
 ## Performance
 

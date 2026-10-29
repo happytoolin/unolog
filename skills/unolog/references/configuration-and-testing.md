@@ -55,7 +55,7 @@ Use `OperationPolicies` only when domains need different levels or rates. Do not
 
 ## Limits and failure handling
 
-The defaults bound every event: `DefaultMaxFields` (256) fields and `DefaultMaxValueBytes` (32 KiB) per string value. Keep them unless the user has a measured need. Set a larger value for an event that is wide by design. Set `-1` to remove a limit; do this only for trusted, bounded input.
+The defaults are `DefaultMaxFields` (256) distinct keys per event and `DefaultMaxValueBytes` (32 KiB) per string value. Field keys, nested maps, slices, structs, and `OperationStart` fields are not limited. Keep them unless the user has a measured need. Set a larger value for an event that is wide by design. Set `-1` to remove a limit; do this only for trusted, bounded input.
 
 ```go
 rt, err := unolog.Compile(unolog.Config{
@@ -69,9 +69,9 @@ rt, err := unolog.Compile(unolog.Config{
 })
 ```
 
-At the field limit, a write to an existing key replaces its value, so a progress counter stays correct. A new key is dropped and counted in `unolog.dropped_fields`. Canonical keys are never dropped. A cut value is counted in `unolog.truncated_values`. Treat either field in production output as a signal to fix the code or raise the limit.
+Repeated writes to one key do not use up the field limit: at the limit, a write to an existing key replaces its value, and a new key first removes the older writes of repeated keys. A new key that still does not fit is dropped and counted in `unolog.dropped_fields`. The `unolog.Key*` constants are never dropped; other keys with the same prefix are ordinary keys. A cut value is counted in `unolog.truncated_values`. Treat either field in production output as a signal to fix the code or raise the limit.
 
-A panicking sink or sampler does not escape `End`. unolog reports it to `ErrorHandler` as a `*unolog.PanicError` (with the stack), keeps the event on a sampler panic, and drops it on a sink panic. The default handler writes to stderr at most once per second. Do not wrap sinks in your own `recover`.
+A panicking sink or sampler does not escape `End`. unolog reports it to `ErrorHandler` as a `*unolog.PanicError` (with the stack) and keeps the event on a sampler panic. On a sink panic, `End` returns `false`, but delivery can be partial: a sink that writes to several destinations may have written to some of them first, so do not retry the write. A failed write from `NewJSONSink` also goes to `ErrorHandler` (`unolog.ErrSinkWrite`), and `End` returns `false`. The default handler writes to stderr at most once per second, and a panicking `ErrorHandler` falls back to it. Do not wrap sinks in your own `recover`.
 
 ## Test with TestSink
 

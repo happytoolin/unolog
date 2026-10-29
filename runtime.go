@@ -54,8 +54,10 @@ type Config struct {
 	// request that calls Add in a loop cannot grow without limit. Zero
 	// selects DefaultMaxFields; a negative value removes the limit. At
 	// the limit, a write to a key the event already holds replaces that
-	// value in place, and a write with a new key is dropped and counted
-	// in the unolog.dropped_fields field. Canonical keys (the Key*
+	// value in place, and a write with a new key first removes the older
+	// writes of repeated keys, so MaxFields bounds distinct keys. A new
+	// key that still does not fit is dropped and counted in the
+	// unolog.dropped_fields field. Canonical keys (the Key*
 	// constants) are never dropped, and the completion fields End adds
 	// do not count.
 	MaxFields int
@@ -64,16 +66,20 @@ type Config struct {
 	// members of map[string]any fields (which covers the structured
 	// error and panic fields), and the SetMessage text. Longer values
 	// are cut at a UTF-8 boundary and counted in the
-	// unolog.truncated_values field. Other value types are not cut.
+	// unolog.truncated_values field. The text of an error value is cut
+	// when the canonical line is encoded, and that cut is not counted.
+	// Field keys and other value types are not cut.
 	// Zero selects DefaultMaxValueBytes; a negative value removes the
 	// limit.
 	MaxValueBytes int
 
 	// ErrorHandler receives the failures unolog contains instead of
 	// crashing the caller: a panicking Sink or Sampler, reported as a
-	// *PanicError. Nil selects the default, which writes the error and
+	// *PanicError, and a failed write from a FallibleSink such as
+	// JSONSink (errors.Is matches ErrSinkWrite). Nil selects the default, which writes the error and
 	// its stack to os.Stderr at most once per second. The handler runs
-	// synchronously inside End and must not panic.
+	// synchronously inside End. A panic in the handler is recovered, and
+	// the report goes to the default instead.
 	ErrorHandler func(error)
 }
 
@@ -89,6 +95,7 @@ type Runtime struct {
 	limits     limits
 	onError    func(error)
 	reporter   *rateLimitedReporter
+	fallible   FallibleSink // sink, when it reports write errors
 
 	// alwaysKeep is the compiled keep-everything fast path: rate
 	// exactly 1.0 with no sampler, per-level rates, or policies means
@@ -111,11 +118,10 @@ func Compile(cfg Config) (*Runtime, error) {
 			maxFields:     limitOrDefault(cfg.MaxFields, DefaultMaxFields),
 			maxValueBytes: limitOrDefault(cfg.MaxValueBytes, DefaultMaxValueBytes),
 		},
-		onError: cfg.ErrorHandler,
+		onError:  cfg.ErrorHandler,
+		reporter: newStderrReporter(), // the default, and the fallback for a panicking ErrorHandler
 	}
-	if rt.onError == nil {
-		rt.reporter = newStderrReporter()
-	}
+	rt.fallible, _ = cfg.Sink.(FallibleSink)
 
 	if !(rt.rate >= 0 && rt.rate <= 1) {
 		return nil, fmt.Errorf("unolog: sampling rate %g: %w", rt.rate, ErrInvalidRate)
@@ -306,8 +312,9 @@ func (rt *Runtime) sample(in SampleInput) (keep bool) {
 }
 
 // emit writes rec to the configured sink and reports whether the sink
-// returned. A sink panic is contained and reported: logging must not
-// crash the request. The nil-runtime and nil-sink cases are no-ops.
+// wrote it. A sink panic and a FallibleSink error are contained and
+// reported: logging must not crash the request. The nil-runtime and
+// nil-sink cases are no-ops.
 func (rt *Runtime) emit(ctx context.Context, rec *Record) (ok bool) {
 	if rt.noop() {
 		return false
@@ -318,6 +325,13 @@ func (rt *Runtime) emit(ctx context.Context, rec *Record) (ok bool) {
 			ok = false
 		}
 	}()
+	if rt.fallible != nil {
+		if err := rt.fallible.WriteErr(ctx, rec); err != nil {
+			rt.reportError(fmt.Errorf("unolog: %w: %w", ErrSinkWrite, err))
+			return false
+		}
+		return true
+	}
 	rt.sink.Write(ctx, rec)
 	return true
 }

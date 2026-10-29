@@ -14,7 +14,18 @@ rt := unolog.MustCompile(unolog.Config{
 })
 ```
 
-`NewJSONSink` writes one canonical line per event. It serializes writes, so ordinary writers such as `bytes.Buffer` are safe. A nil writer creates a no-op sink. Use this before adding a logger dependency only to format JSON.
+`NewJSONSink` writes one canonical line per event. It serializes writes, so ordinary writers such as `bytes.Buffer` are safe. A nil writer creates a no-op sink. Use this before adding a logger dependency only to format JSON. A failed or short write goes to `Config.ErrorHandler` (`unolog.ErrSinkWrite`), and `End` returns `false`.
+
+## Slow writers
+
+`NewJSONSink` writes on the request goroutine. When the writer can be slow (a pipe, a network connection, a busy disk), use the asynchronous sink:
+
+```go
+sink := unolog.NewAsyncJSONSink(os.Stdout, unolog.AsyncJSONSinkConfig{})
+defer sink.Close()
+```
+
+It copies each line into a bounded buffer (`BufferBytes`, default 1 MiB) and writes from one goroutine. It never blocks a request: when the buffer is full, it drops the line, counts it in `Dropped()`, and reports `unolog.ErrSinkFull` to its own `ErrorHandler`. Call `Close` at shutdown, and `Flush(ctx)` when lines must be written before a step continues. Keep `NewJSONSink` when every line must be written.
 
 ## Sink contract
 
@@ -33,7 +44,7 @@ The method runs synchronously when the operation ends. Follow these rules:
 - Copy bytes or values that the sink keeps.
 - Return promptly. A blocked sink blocks request completion.
 - Treat the context as the operation context at end time. Background work started with it inherits request cancellation.
-- Define error handling inside the sink because `Write` does not return an error.
+- To report write errors, also implement `unolog.FallibleSink` (`WriteErr(ctx, rec) error`). `End` then calls `WriteErr`, reports a non-nil error to `Config.ErrorHandler`, and returns `false`. Otherwise, handle errors inside the sink.
 
 ## Retain canonical lines safely
 
@@ -81,6 +92,6 @@ for _, i := range wire.LastIndices(fields, unolog.Field.Key) {
 }
 ```
 
-Use `Field.Key` when the host logger keeps its own envelope. Use `Field.WireKey` for JSON output where user fields named `level`, `time`, or `message` must not collide with the canonical envelope. Use `wire.ErrorMessage` when an error field must become text safely.
+When the host logger writes its own envelope, rename a field whose key the logger writes itself (the slog and zap adapters use `fields.<key>`), and resolve duplicates over the renamed keys. Use `Field.WireKey` for output that uses the canonical envelope, where user fields named `level`, `time`, or `message` must not collide with it. Use `wire.ErrorMessage` when an error field must become text safely.
 
 Add one focused test for concurrency, retained-data copying, and the important type mappings. Do not reproduce every first-party adapter test.

@@ -67,6 +67,52 @@ func BenchmarkJSONSinkLifecycle(b *testing.B) {
 	})
 }
 
+// BenchmarkSinkWriterLatency is the 12-field lifecycle through JSONSink
+// and AsyncJSONSink, with a fast writer and with a writer that takes
+// 20µs per Write (a pipe or a network connection). JSONSink makes the
+// request wait for the writer; AsyncJSONSink makes it wait for a copy.
+func BenchmarkSinkWriterLatency(b *testing.B) {
+	writers := []struct {
+		name string
+		w    io.Writer
+	}{
+		{"discard", io.Discard},
+		{"slow_writer", slowWriter(20 * time.Microsecond)},
+	}
+	for _, wr := range writers {
+		b.Run("json_sink/"+wr.name, func(b *testing.B) {
+			benchSinkLifecycle(b, unolog.NewJSONSink(wr.w))
+		})
+		b.Run("async_json_sink/"+wr.name, func(b *testing.B) {
+			sink := unolog.NewAsyncJSONSink(wr.w, unolog.AsyncJSONSinkConfig{})
+			benchSinkLifecycle(b, sink)
+			b.StopTimer()
+			if err := sink.Close(); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportMetric(float64(sink.Dropped()), "dropped")
+		})
+	}
+}
+
+func benchSinkLifecycle(b *testing.B, sink unolog.Sink) {
+	b.Helper()
+	rt := unolog.MustCompile(unolog.Config{Sink: sink, SamplingRate: 1})
+	b.ReportAllocs()
+	for b.Loop() {
+		op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainHTTP, Name: "GET /api/v1/orders/:id"})
+		benchmarkFields(op.Context(), 12)
+		op.End(nil)
+	}
+}
+
+type slowWriter time.Duration
+
+func (d slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(time.Duration(d))
+	return len(p), nil
+}
+
 // BenchmarkJSONSinkEscaping isolates escape-scan cost at the sink level.
 func BenchmarkJSONSinkEscaping(b *testing.B) {
 	rt := unolog.MustCompile(unolog.Config{Sink: unolog.NewJSONSink(io.Discard), SamplingRate: 1})

@@ -239,3 +239,82 @@ func TestCrashTypedNilErrorField(t *testing.T) {
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
+
+// A field named after a key the encoder writes itself is renamed, so the
+// JSON line has one member per key; New assumes the production keys.
+func TestSinkRenamesEncoderKeys(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg     zapcore.EncoderConfig
+		newSink func(*gozap.Logger) *Sink
+		renamed []string
+		kept    []string
+	}{
+		"production": {
+			cfg:     gozap.NewProductionEncoderConfig(),
+			newSink: New,
+			renamed: []string{"ts", "level", "logger", "caller", "msg", "stacktrace"},
+			kept:    []string{"M", "L"},
+		},
+		"development": {
+			cfg: gozap.NewDevelopmentEncoderConfig(),
+			newSink: func(l *gozap.Logger) *Sink {
+				return NewWithEncoderConfig(l, gozap.NewDevelopmentEncoderConfig())
+			},
+			renamed: []string{"T", "L", "N", "C", "M", "S"},
+			kept:    []string{"msg", "level"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			tc.cfg.EncodeTime = zapcore.ISO8601TimeEncoder
+			core := zapcore.NewCore(zapcore.NewJSONEncoder(tc.cfg), zapcore.AddSync(&buf), zapcore.DebugLevel)
+			rt := unolog.MustCompile(unolog.Config{Sink: tc.newSink(gozap.New(core)), SamplingRate: 1})
+			op := unolog.Start(context.Background(), rt, unolog.OperationStart{Domain: unolog.DomainJob, Name: "t"})
+			for _, key := range append(append([]string{}, tc.renamed...), tc.kept...) {
+				unolog.Add(op.Context(), key, "user "+key)
+			}
+			op.End(nil)
+
+			line := buf.String()
+			var m map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+				t.Fatalf("%v: %s", err, line)
+			}
+			for _, key := range tc.renamed {
+				if got := strings.Count(line, `"`+key+`":`); got > 1 {
+					t.Fatalf("%q appears %d times: %s", key, got, line)
+				}
+				if m["fields."+key] != "user "+key {
+					t.Fatalf("fields.%s = %v: %s", key, m["fields."+key], line)
+				}
+			}
+			for _, key := range tc.kept {
+				if m[key] != "user "+key {
+					t.Fatalf("%s = %v, want the field unrenamed: %s", key, m[key], line)
+				}
+			}
+		})
+	}
+}
+
+// The dedupe runs over the renamed keys: a user "msg" and a later user
+// "fields.msg" resolve as one field with the later value.
+func TestSinkDedupesRenamedKeys(t *testing.T) {
+	logs := emit(t, func(ctx context.Context) {
+		unolog.Add(ctx, "msg", "a", "fields.msg", "b")
+	})
+	entry := logs.All()[0]
+	if n := countKey(entry.Context, "fields.msg"); n != 1 || entry.ContextMap()["fields.msg"] != "b" {
+		t.Fatalf("fields.msg written %d times, context %v", n, entry.ContextMap())
+	}
+}
+
+func countKey(fields []gozap.Field, key string) int {
+	n := 0
+	for _, f := range fields {
+		if f.Key == key {
+			n++
+		}
+	}
+	return n
+}

@@ -1,0 +1,4 @@
+go test fuzz v1
+byte('"')
+byte('L')
+[]byte("\xf8;0;\x88;\xf8=0")

@@ -79,7 +79,7 @@ func BenchmarkRecordEncodeWrite12(b *testing.B) {
 	fields := make([]Field, 12)
 	keys := []string{"http.method", "http.path", "http.route", "http.status", "op.domain", "op.name", "op.outcome", "op.code", "duration_ms", "request_id", "user_id", "cache.hit"}
 	for i, k := range keys {
-		fields[i] = fieldStr(k, "v")
+		fields[i] = String(k, "v")
 	}
 	completedAt := time.Now()
 	b.ReportAllocs()
@@ -107,7 +107,7 @@ const benchPre = 4096
 // measures on its own.
 var benchWideLimits = limits{maxFields: math.MaxInt, maxValueBytes: DefaultMaxValueBytes}
 
-func benchField() Field { return fieldStr("user_id", "u_8472") }
+func benchField() Field { return String("user_id", "u_8472") }
 
 // BenchmarkEventAppendGuarded is the append hot path: one atomic load,
 // one mutex round trip, one slice append. Every open event is guarded,
@@ -207,7 +207,7 @@ func BenchmarkEventSnapshotFields(b *testing.B) {
 	ev := newEvent(defaultLimits)
 	gen := ev.state.Load() >> walStateBits
 	for range 12 {
-		ev.append(gen, fieldStr("k", "v"))
+		ev.append(gen, String("k", "v"))
 	}
 	b.ReportAllocs()
 	for b.Loop() {

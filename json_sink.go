@@ -12,8 +12,9 @@ import (
 // canonical unolog line (level, deduped fields, RFC3339 completion time,
 // message). A JSONSink is safe for concurrent use: encoding happens
 // without a lock, then Write is serialized so unsynchronized writers
-// (bytes.Buffer) stay race-clean. Write errors are ignored (events are
-// best-effort, like the bridges).
+// (bytes.Buffer) stay race-clean. It is a FallibleSink: as Config.Sink,
+// a failed or short write goes to Config.ErrorHandler and End returns
+// false. Use AsyncJSONSink when the writer can be slow.
 type JSONSink struct {
 	mu sync.Mutex
 	w  io.Writer
@@ -25,15 +26,29 @@ func NewJSONSink(w io.Writer) *JSONSink {
 	return &JSONSink{w: w}
 }
 
-// Write implements Sink.
-func (s *JSONSink) Write(_ context.Context, rec *Record) {
-	if s == nil || s.w == nil || rec == nil {
-		return
-	}
-	b := rec.Encoded()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, _ = s.w.Write(b)
+// Write implements Sink. It ignores write errors; WriteErr returns them.
+func (s *JSONSink) Write(ctx context.Context, rec *Record) {
+	_ = s.WriteErr(ctx, rec)
 }
 
-var _ Sink = (*JSONSink)(nil)
+// WriteErr implements FallibleSink: it writes the canonical line and
+// returns the writer's error, or io.ErrShortWrite for a short write.
+func (s *JSONSink) WriteErr(_ context.Context, rec *Record) error {
+	if s == nil || s.w == nil || rec == nil {
+		return nil
+	}
+	b := rec.Encoded()
+	n, err := s.write(b)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
+func (s *JSONSink) write(b []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock() // a panicking writer must not leave the sink locked
+	return s.w.Write(b)
+}
+
+var _ FallibleSink = (*JSONSink)(nil)

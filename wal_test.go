@@ -203,7 +203,7 @@ func TestWALResetReleasesFieldReferences(t *testing.T) {
 	}
 	previous := ev.fields
 	ev.reset(defaultLimits)
-	ev.append(genOf(ev), fieldStr("short", "next request"))
+	ev.append(genOf(ev), String("short", "next request"))
 	for i, f := range previous[1:] {
 		if f.kind != KindInvalid || f.key != "" || f.str != "" || f.val != nil {
 			t.Fatalf("unused slot %d retained the previous request", i+1)
@@ -406,8 +406,8 @@ func TestSealDuringAppend(t *testing.T) {
 func TestAppendStaleGeneration(t *testing.T) {
 	ev := newEvent(defaultLimits)
 	ref := &walRef{gen: ev.state.Load() >> walStateBits}
-	ev.append(ref.gen-1, fieldStr("past", "x"))   // stale past
-	ev.append(ref.gen+1, fieldStr("future", "x")) // future
+	ev.append(ref.gen-1, String("past", "x"))   // stale past
+	ev.append(ref.gen+1, String("future", "x")) // future
 	for _, f := range ev.fields {
 		if f.key == "past" || f.key == "future" {
 			t.Fatal("generation check failed")
@@ -428,7 +428,7 @@ func TestSnapshotGenerationGuard(t *testing.T) {
 	}
 
 	// Positive control: the current generation snapshots.
-	ev.append(genOf(ev), fieldStr("k", "v"))
+	ev.append(genOf(ev), String("k", "v"))
 	snap, ok := ev.snapshotFields(genOf(ev))
 	if !ok || len(snap) != 1 || snap[0].key != "k" {
 		t.Fatalf("active snapshot = %v (ok=%v), want one k field", snap, ok)
@@ -454,7 +454,7 @@ func TestSnapshotResetSerialization(t *testing.T) {
 		ev := newEvent(defaultLimits)
 		gen := genOf(ev)
 		for j := range 256 {
-			ev.append(gen, fieldInt64("k", int64(j)))
+			ev.append(gen, Int64("k", int64(j)))
 		}
 		ev.seal()
 

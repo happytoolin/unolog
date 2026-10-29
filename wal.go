@@ -1,6 +1,7 @@
 package unolog
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,9 +51,10 @@ type event struct {
 	requestedLevel  Level
 	hasErr          bool // the bools share one word after requestedLevel
 	hasRequestedLvl bool
+	saturated       bool // full after a compaction; see pushLimited
 
 	// limits bound the WAL; dropped and truncated count the writes the
-	// limits changed. All three are read and written under mu.
+	// limits changed. All four are read and written under mu.
 	limits    limits
 	dropped   int64
 	truncated int64
@@ -96,6 +98,7 @@ func (e *event) reset(lim limits) {
 	e.hasErr = false
 	e.requestedLevel = 0
 	e.hasRequestedLvl = false
+	e.saturated = false
 	e.limits = lim
 	e.dropped = 0
 	e.truncated = 0
@@ -153,11 +156,14 @@ func (e *event) fits(strLen int, kind FieldKind) bool {
 }
 
 // pushLimited is push for a full event or a value that may need a cut.
-// At the field limit, an existing key takes the new value in place
-// (its position stays), a canonical key is appended once, and any
-// other new key is dropped and counted. It takes a pointer so the hot
-// callers do not reserve stack space to pass a Field, and it copies
-// *p before a cut, so the caller's Field never changes.
+// At the field limit, a key the event holds takes the new value in
+// place (its position stays). A canonical key replaces only a write of
+// the same kind, because scanWAL reads the last write of the kind it
+// needs; otherwise it is appended. A new key first compacts the WAL,
+// and is dropped and counted only if the event is still full. It takes
+// a pointer so the hot callers do not reserve stack space to pass a
+// Field, and it copies *p before a cut, so the caller's Field never
+// changes.
 func (e *event) pushLimited(p *Field) {
 	f := *p
 	if len(e.fields) < e.limits.maxFields {
@@ -165,19 +171,56 @@ func (e *event) pushLimited(p *Field) {
 		e.fields = append(e.fields, f)
 		return
 	}
+	canonical := isCanonicalKey(f.key)
 	for i := len(e.fields) - 1; i >= 0; i-- {
-		if e.fields[i].key == f.key {
+		if e.fields[i].key == f.key && (!canonical || e.fields[i].kind == f.kind) {
 			e.limitValue(&f)
 			e.fields[i] = f
 			return
 		}
 	}
-	if !isCanonicalKey(f.key) {
-		e.dropped++
-		return
+	if !canonical {
+		// Once a compaction leaves the event full, no later write can
+		// add a write to remove: a full event only replaces in place,
+		// and the canonical writes it appends are never removed.
+		if !e.saturated {
+			e.compact()
+		}
+		if len(e.fields) >= e.limits.maxFields {
+			e.saturated = true
+			e.dropped++
+			return
+		}
 	}
 	e.limitValue(&f)
 	e.fields = append(e.fields, f)
+}
+
+// compact removes each non-canonical write that a later write of the
+// same key replaces, so MaxFields bounds distinct keys rather than
+// writes: a key set in a loop does not fill the event. The encoder,
+// the sink bridges, and Lookup all resolve a key to its last write at
+// its last position, so the event encodes the same before and after.
+// Canonical writes stay, because scanWAL reads earlier writes of
+// another kind. The caller holds mu.
+func (e *event) compact() {
+	seen := make(map[string]struct{}, len(e.fields))
+	w := len(e.fields)
+	for _, f := range slices.Backward(e.fields) {
+		if !isCanonicalKey(f.key) {
+			if _, later := seen[f.key]; later {
+				continue
+			}
+			seen[f.key] = struct{}{}
+		}
+		// w never falls below the loop index, so the write lands on a
+		// field the loop has already read.
+		w--
+		e.fields[w] = f
+	}
+	n := copy(e.fields, e.fields[w:])
+	clear(e.fields[n:]) // Do not retain the removed values.
+	e.fields = e.fields[:n]
 }
 
 // limitValue cuts the string content of f to the byte limit in place

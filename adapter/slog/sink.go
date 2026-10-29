@@ -45,7 +45,10 @@ func New(l *stdslog.Logger) *Sink {
 
 // Write implements unolog.Sink: the record's fields are appended in
 // insertion order (last-write-wins duplicates resolved) as typed slog
-// attributes.
+// attributes. A field whose key is one the handler writes itself
+// (slog.TimeKey, LevelKey, MessageKey, SourceKey) is renamed to
+// "fields.<key>", as the canonical line renames "message", "time", and
+// "level".
 func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 	if s == nil || s.logger == nil || rec == nil {
 		return
@@ -75,44 +78,63 @@ func (s *Sink) Write(ctx context.Context, rec *unolog.Record) {
 	bufPtr := slogAttrPool.Get().(*[]stdslog.Attr) //nolint:forcetypeassert // the pool's New stores exactly *[]stdslog.Attr
 	attrs := (*bufPtr)[:0]
 	defer func() { recycleAttrs(bufPtr, attrs) }()
-	for _, i := range wire.LastIndices(fields, unolog.Field.Key) {
-		attrs = append(attrs, attrOf(fields[i]))
+	for _, i := range wire.LastIndices(fields, wireKey) {
+		attrs = append(attrs, attrOf(wireKey(fields[i]), fields[i]))
 	}
 	s.logger.LogAttrs(ctx, slogLevel, rec.Message(), attrs...)
+}
+
+// wireKey returns the attribute key for f. Two members with one key
+// are parsed differently by different tools, so a key the handler
+// writes itself gets the "fields." prefix. The dedupe runs over these
+// keys: a user "msg" and a user "fields.msg" resolve as one attribute.
+func wireKey(f unolog.Field) string {
+	switch key := f.Key(); key {
+	case stdslog.TimeKey:
+		return "fields." + stdslog.TimeKey
+	case stdslog.LevelKey:
+		return "fields." + stdslog.LevelKey
+	case stdslog.MessageKey:
+		return "fields." + stdslog.MessageKey
+	case stdslog.SourceKey:
+		return "fields." + stdslog.SourceKey
+	default:
+		return key
+	}
 }
 
 // attrOf maps a typed field to the matching slog constructor. Error
 // fields render the message string; everything without a typed slot
 // goes through stdslog.Any.
-func attrOf(f unolog.Field) stdslog.Attr {
+func attrOf(key string, f unolog.Field) stdslog.Attr {
 	if err, ok := f.Err(); ok {
-		return stdslog.String(f.Key(), wire.ErrorMessage(err))
+		return stdslog.String(key, wire.ErrorMessage(err))
 	}
 	if str, ok := f.Str(); ok {
-		return stdslog.String(f.Key(), str)
+		return stdslog.String(key, str)
 	}
 	if i, ok := f.Int(); ok {
-		return stdslog.Int64(f.Key(), i)
+		return stdslog.Int64(key, i)
 	}
 	if u, ok := f.Uint(); ok {
-		return stdslog.Uint64(f.Key(), u)
+		return stdslog.Uint64(key, u)
 	}
 	if fl, ok := f.Float(); ok {
 		// slog widens float32 (no Float32 constructor) — the v0 adapter's
 		// shape; the JSON sink and zap/zerolog bridges keep 32-bit
 		// precision.
-		return stdslog.Float64(f.Key(), fl)
+		return stdslog.Float64(key, fl)
 	}
 	if b, ok := f.Bool(); ok {
-		return stdslog.Bool(f.Key(), b)
+		return stdslog.Bool(key, b)
 	}
 	if tm, ok := f.Time(); ok {
-		return stdslog.Time(f.Key(), tm)
+		return stdslog.Time(key, tm)
 	}
 	if d, ok := f.Duration(); ok {
-		return stdslog.Duration(f.Key(), d)
+		return stdslog.Duration(key, d)
 	}
-	return stdslog.Any(f.Key(), f.Any())
+	return stdslog.Any(key, f.Any())
 }
 
 var _ unolog.Sink = (*Sink)(nil)

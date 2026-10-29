@@ -1,0 +1,34 @@
+name: weekly-mutation
+
+# Weekly mutation test: gremlins changes one operator at a time in the
+# library code and runs the tests. A change that no test fails means a
+# line the tests do not check. scripts/mutate.sh finds the modules and
+# fails a module whose test efficacy is below its floor (100%, or 85%
+# for the root module, which keeps equivalent mutants).
+
+on:
+  schedule:
+    - cron: '0 4 * * 0' # 4 AM UTC every Sunday
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@v6.2.0
+        with:
+          go-version: '1.27.x'
+          check-latest: true
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - name: Mutation-test every module
+        run: scripts/mutate.sh

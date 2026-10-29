@@ -6,11 +6,13 @@
 #   scripts/fuzz.sh -l [package-dir ...]              list "dir target" pairs
 #   scripts/fuzz.sh -j                                print package dirs as JSON
 #
-# Targets are found by scanning *_test.go files for "func Fuzz", so a new
-# fuzz target runs in CI, in the nightly job, and in `just fuzz` without a
-# list to update. -t takes any `go test -fuzztime` value (default 30s).
-# With package dirs, only those directories run. Set FUZZ_FAILURES_FILE to
-# also write the failing targets to that file.
+# Targets are found by scanning *_test.go files for "func FuzzX(f
+# *testing.F)", so a new fuzz target runs in CI, in the nightly job, and in
+# `just fuzz` without a list to update. A target that go test does not run
+# (for example, one behind a build tag) fails. -t takes any
+# `go test -fuzztime` value (default 30s). With package dirs, only those
+# directories run. Set FUZZ_FAILURES_FILE to also write the failing targets
+# to that file.
 #
 # Go writes each failing input to <package-dir>/testdata/fuzz/<target>/.
 # Commit that file to keep the case as a regression test.
@@ -35,24 +37,28 @@ shift $((OPTIND - 1))
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Package directories that declare at least one fuzz target, tracked or
-# new. The scan is grep, not `go test -list`: no build per package.
+# A fuzz target declaration. The scan is grep, not `go test -list`: no
+# build per package.
+fuzz_func='^func Fuzz[A-Za-z0-9_]*\([A-Za-z_][A-Za-z0-9_]* \*testing\.F\)'
+
+# Package directories that declare at least one fuzz target, tracked or new.
 all_dirs() {
 	git ls-files --cached --others --exclude-standard -- '*_test.go' |
-		xargs grep -l '^func Fuzz' |
+		xargs grep -lE "$fuzz_func" |
 		xargs -n1 dirname |
 		sort -u
 }
 
 targets_in() {
-	grep -ho '^func Fuzz[A-Za-z0-9_]*' "$1"/*_test.go | sed 's/^func //' | sort -u
+	grep -hoE "$fuzz_func" "$1"/*_test.go | sed -E 's/^func (Fuzz[A-Za-z0-9_]*).*/\1/' | sort -u
 }
 
 dirs=()
 if [ "$#" -gt 0 ]; then
 	for dir in "$@"; do
 		dir="${dir#./}"
-		dirs+=("${dir%/}")
+		dir="${dir%/}"
+		dirs+=("${dir:-.}")
 	done
 else
 	while IFS= read -r dir; do
@@ -71,15 +77,24 @@ if [ "$mode" = json ]; then
 	exit 0
 fi
 
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+
 failures=()
 for dir in "${dirs[@]}"; do
-	for target in $(targets_in "$dir"); do
+	if ! targets="$(targets_in "$dir")" || [ -z "$targets" ]; then
+		echo "no fuzz targets in $dir" >&2
+		exit 1
+	fi
+	for target in $targets; do
 		if [ "$mode" = list ]; then
 			echo "$dir $target"
 			continue
 		fi
 		echo "=== $dir $target ($fuzztime)"
-		if (cd "$dir" && go test . -run '^$' -fuzz "^${target}\$" -fuzztime "$fuzztime"); then
+		# go test exits 0 when -fuzz matches nothing it compiled.
+		if (cd "$dir" && go test . -run '^$' -fuzz "^${target}\$" -fuzztime "$fuzztime") 2>&1 | tee "$log" &&
+			! grep -q 'no fuzz tests to fuzz' "$log"; then
 			echo "PASS $dir $target"
 		else
 			echo "FAIL $dir $target"

@@ -15,9 +15,9 @@ import (
 func TestDefaultReporterRateLimits(t *testing.T) {
 	var buf bytes.Buffer
 	r := &rateLimitedReporter{w: &buf}
-	r.report(ErrSinkPanic, "first")
+	r.reportPanic(ErrSinkPanic, "first")
 	for range 5 {
-		r.report(ErrSinkPanic, "suppressed")
+		r.reportPanic(ErrSinkPanic, "suppressed")
 	}
 	out := buf.String()
 	if !strings.HasPrefix(out, "unolog: sink panic: first\n") {
@@ -36,12 +36,21 @@ func TestDefaultReporterRateLimits(t *testing.T) {
 	// Open the window: the next report carries the suppressed count.
 	r.next.Store(0)
 	buf.Reset()
-	r.report(ErrSamplerPanic, "later")
+	r.reportPanic(ErrSamplerPanic, "later")
 	if !strings.HasPrefix(buf.String(), "unolog: sampler panic: later (5 reports suppressed since the last report)\n") {
 		t.Fatalf("report after the interval = %q", buf.String())
 	}
 	if r.suppressed.Load() != 0 {
 		t.Fatal("suppressed count not reset")
+	}
+
+	// One suppressed report is also counted.
+	r.reportError(errors.New("in window"))
+	r.next.Store(0)
+	buf.Reset()
+	r.reportError(errors.New("next"))
+	if got := buf.String(); got != "next (1 reports suppressed since the last report)\n" {
+		t.Fatalf("report after one suppressed = %q", got)
 	}
 }
 
@@ -52,7 +61,7 @@ func TestDefaultReporterConcurrent(t *testing.T) {
 	for range 8 {
 		wg.Go(func() {
 			for range 100 {
-				r.report(ErrSinkPanic, "boom")
+				r.reportPanic(ErrSinkPanic, "boom")
 			}
 		})
 	}
@@ -71,8 +80,9 @@ func TestDefaultReporterConcurrent(t *testing.T) {
 	}
 }
 
-// Compile installs the default reporter only when no handler is set,
-// and End routes a sink panic to it without escaping.
+// Compile always installs the default reporter: it is the default and
+// the fallback for a panicking ErrorHandler. End routes a sink panic to
+// it without escaping.
 func TestCompileSelectsReporter(t *testing.T) {
 	rt := MustCompile(Config{Sink: sinkFunc(func(context.Context, *Record) { panic("x") }), SamplingRate: 1})
 	if rt.reporter == nil || rt.onError != nil {
@@ -89,8 +99,29 @@ func TestCompileSelectsReporter(t *testing.T) {
 	}
 
 	rt = MustCompile(Config{ErrorHandler: func(error) {}})
-	if rt.reporter != nil {
-		t.Fatal("reporter installed next to a custom ErrorHandler")
+	if rt.reporter == nil {
+		t.Fatal("no fallback reporter next to a custom ErrorHandler")
+	}
+}
+
+// A working ErrorHandler takes every report: stderr stays empty.
+func TestErrorHandlerReplacesStderr(t *testing.T) {
+	var reports []error
+	rt := MustCompile(Config{
+		Sink:         NewJSONSink(jsonWriterFunc(func([]byte) (int, error) { return 0, errors.New("disk full") })),
+		SamplingRate: 1,
+		Sampler:      func(SampleInput) bool { panic("sampler bug") },
+		ErrorHandler: func(err error) { reports = append(reports, err) },
+	})
+	var buf bytes.Buffer
+	rt.reporter.w = &buf
+	// The sampler panics, the event is kept, and the sink write fails.
+	Start(context.Background(), rt, OperationStart{}).End(nil)
+	if len(reports) != 2 || !errors.Is(reports[0], ErrSamplerPanic) || !errors.Is(reports[1], ErrSinkWrite) {
+		t.Fatalf("reports = %v", reports)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", buf.String())
 	}
 }
 
@@ -113,24 +144,34 @@ type panickyStringer struct{}
 
 func (panickyStringer) String() string { panic("stringer boom") }
 
-// A panicking ErrorHandler is the caller's own code: it propagates, and
-// the operation still publishes so a concurrent End cannot hang.
-func TestPanickingErrorHandlerPropagates(t *testing.T) {
+// A panicking ErrorHandler must not escape End: the report falls back
+// to stderr, and an application panic keeps its own value.
+func TestPanickingErrorHandlerFallsBackToStderr(t *testing.T) {
 	rt := MustCompile(Config{
 		Sink:         sinkFunc(func(context.Context, *Record) { panic("sink") }),
 		SamplingRate: 1,
 		ErrorHandler: func(err error) { panic(err) },
 	})
+	var buf bytes.Buffer
+	rt.reporter.w = &buf
 	op := Start(context.Background(), rt, OperationStart{})
+	if op.End(nil) {
+		t.Fatal("End reported an emission through a panicking sink")
+	}
+	if !strings.HasPrefix(buf.String(), "unolog: sink panic: sink\n") {
+		t.Fatalf("fallback report = %q", buf.String())
+	}
+
 	var escaped any
 	func() {
 		defer func() { escaped = recover() }()
-		op.End(nil)
+		func() {
+			op := Start(context.Background(), rt, OperationStart{})
+			defer op.End(nil)
+			panic("app")
+		}()
 	}()
-	if err, ok := escaped.(error); !ok || !errors.Is(err, ErrSinkPanic) {
-		t.Fatalf("escaped %#v", escaped)
-	}
-	if op.End(nil) {
-		t.Fatal("second End must report the unpublished emission as false")
+	if escaped != "app" {
+		t.Fatalf("End re-panicked with %#v, want the application's own value", escaped)
 	}
 }

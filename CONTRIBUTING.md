@@ -40,6 +40,30 @@ target fails, Go writes the input to `<package>/testdata/fuzz/<target>/`.
 Commit that file with the fix: it then runs as a regression test in
 `go test`.
 
+## Mutation-test your change
+
+Run the mutation tests when you change a test or the code it covers:
+
+```bash
+just mutate          # every module
+just mutate .        # only the root module
+```
+
+`scripts/mutate.sh` runs [gremlins](https://github.com/go-gremlins/gremlins)
+on each module. Gremlins changes one operator at a time and runs the tests.
+A mutant that "lived" is a change that no test caught: add a test that fails
+with that change. Some mutants cannot change behavior, for example a capacity
+hint or the choice between a fast path and a slow path that write the same
+bytes. Do not add a test for these.
+
+A module fails when its efficacy is below its floor: 100%, or 85% for the
+root module, which keeps such equivalent mutants. `MUTATION_EFFICACY` sets
+one floor for every module. Set `MUTATION_WORKERS` to limit the number of
+parallel workers. The weekly mutation job runs the same script.
+
+Run it on an idle machine. Gremlins counts every test failure as a killed
+mutant, so tests that fail under heavy load hide mutants that live.
+
 ## Pull requests
 
 Describe the problem and the chosen solution. Link the related issue when one

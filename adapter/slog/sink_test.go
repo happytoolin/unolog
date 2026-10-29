@@ -385,3 +385,34 @@ func TestStressSlogSustainedCorrectness(t *testing.T) {
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
+
+// A field named after a key the handler writes itself is renamed, so the
+// JSON line has one member per key; the dedupe runs over the new keys.
+func TestSinkRenamesHandlerKeys(t *testing.T) {
+	var buf bytes.Buffer
+	emit(t, New(stdslog.New(stdslog.NewJSONHandler(&buf, nil))), unolog.LevelInfo,
+		"msg", "a", "level", "user level", "time", "user time", "source", "user source", "fields.msg", "b")
+
+	line := buf.String()
+	for _, key := range []string{"msg", "level", "time", "source", "fields.msg", "fields.level", "fields.time", "fields.source"} {
+		want := 1
+		if key == "source" {
+			want = 0 // the handler writes no source without AddSource
+		}
+		if got := strings.Count(line, `"`+key+`":`); got != want {
+			t.Fatalf("%q appears %d times, want %d: %s", key, got, want, line)
+		}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"msg": unolog.DefaultOperationMessage, "level": "INFO",
+		"fields.msg": "b", "fields.level": "user level", "fields.time": "user time", "fields.source": "user source",
+	} {
+		if m[key] != want {
+			t.Fatalf("%s = %v, want %v", key, m[key], want)
+		}
+	}
+}

@@ -21,9 +21,25 @@ func recOf(level Level, msg string, fields ...Field) *Record {
 	return &Record{level: level, msg: msg, fields: fields, completedAt: time.Date(2026, 9, 1, 10, 0, 0, 0, time.Local)}
 }
 
+// The line's level member is the lower-case level name. An unknown level
+// encodes as info, the same as Level.String.
+func TestRecordEncodesEveryLevel(t *testing.T) {
+	for level, want := range map[Level]string{
+		LevelDebug: "debug", LevelInfo: "info", LevelWarn: "warn", LevelError: "error", Level(42): "info",
+	} {
+		var line struct{ Level string }
+		if err := json.Unmarshal(recOf(level, "m").Encoded(), &line); err != nil {
+			t.Fatal(err)
+		}
+		if line.Level != want {
+			t.Errorf("Level(%d) encodes as %q, want %q", int(level), line.Level, want)
+		}
+	}
+}
+
 func TestRecordTimeAccessor(t *testing.T) {
 	at := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
-	r := recOf(LevelInfo, "m", fieldStr("k", "v"))
+	r := recOf(LevelInfo, "m", String("k", "v"))
 	r.completedAt = at
 	if got := r.Time(); !got.Equal(at) {
 		t.Fatalf("Time() = %v, want %v", got, at)
@@ -125,9 +141,9 @@ func TestDedupeCrossover(t *testing.T) {
 	for _, n := range []int{23, 24, 25, 26, 33, 40} {
 		fields := make([]Field, 0, n)
 		for i := range n - 1 {
-			fields = append(fields, fieldStr(strings.Repeat("k", i+2), "v"))
+			fields = append(fields, String(strings.Repeat("k", i+2), "v"))
 		}
-		fields = append(fields, fieldStr("kk", "last")) // dup of the first key
+		fields = append(fields, String("kk", "last")) // dup of the first key
 		r := recOf(LevelInfo, "m", fields...)
 		line := string(r.Encoded())
 		if strings.Count(line, `"kk":`) != 1 {
@@ -366,7 +382,7 @@ func capturedLine(t *testing.T, ev CapturedEvent) []byte {
 func allocFields(n int) []Field {
 	fields := make([]Field, 0, n)
 	for i := range n {
-		fields = append(fields, fieldStr(fmt.Sprintf("k%02d", i), "v"))
+		fields = append(fields, String(fmt.Sprintf("k%02d", i), "v"))
 	}
 	return fields
 }
@@ -378,7 +394,7 @@ func allocFields(n int) []Field {
 // append growth cannot allocate.
 func TestRecordEncodeAllocNarrowPath(t *testing.T) {
 	fields := allocFields(19)
-	fields = append(fields, fieldStr("k00", "last")) // duplicate of the first key
+	fields = append(fields, String("k00", "last")) // duplicate of the first key
 	if len(fields) != 20 {
 		t.Fatalf("setup: %d fields, want 20", len(fields))
 	}
@@ -386,7 +402,7 @@ func TestRecordEncodeAllocNarrowPath(t *testing.T) {
 	dst := make([]byte, 1, 4096)
 	dst[0] = '{'
 	if allocs := testing.AllocsPerRun(200, func() {
-		appendDedupedFields(dst, fields)
+		appendDedupedFields(dst, fields, 0)
 	}); allocs != 0 {
 		t.Fatalf("narrow path (20 fields) allocated %.0f times, want 0 — "+
 			"the allocation-free scan no longer runs (dedupeScanLimit?)", allocs)
@@ -408,14 +424,14 @@ func TestRecordEncodeAllocWidePath(t *testing.T) {
 	dst[0] = '{'
 
 	allocs25 := testing.AllocsPerRun(200, func() {
-		appendDedupedFields(dst, fields25)
+		appendDedupedFields(dst, fields25, 0)
 	})
 	if allocs25 < 1 {
 		t.Fatalf("wide path (25 fields) allocated %.0f times, want >= 1 — "+
 			"the crossover no longer routes wide events to the seen-set path", allocs25)
 	}
 	allocs33 := testing.AllocsPerRun(200, func() {
-		appendDedupedFields(dst, fields33)
+		appendDedupedFields(dst, fields33, 0)
 	})
 	if allocs33 < 1 {
 		t.Fatalf("wide path (33 unique fields) allocated %.0f times, want >= 1 "+
@@ -668,17 +684,28 @@ func TestTestSinkCopiesMutableValues(t *testing.T) {
 // "fields.message" resolve as one last-write-wins member), matching
 // the encoder's dedupe.
 
-// dedupeKeys is the small key alphabet: k0-k3 for dense duplicates plus
-// the canonical-colliding names and a wide unique tail.
-var dedupeKeys = []string{"k0", "k1", "k2", "k3", "message", "time", "level", "zz"}
+// dedupeKeys is the key alphabet: k0-k3 for dense duplicates, the
+// canonical-colliding names, a keyDigest collision pair (same length and
+// same first, middle, and last byte), and a tail of unique keys. With
+// more than 32 distinct keys, a wide event passes the inline seen slots
+// and the encoder falls back to its map.
+var dedupeKeys = func() []string {
+	keys := make([]string, 0, 64)
+	keys = append(keys, "k0", "k1", "k2", "k3", "message", "time", "level", "zz", "abcde", "aXcYe")
+	for i := range 54 {
+		keys = append(keys, fmt.Sprintf("w%02d", i))
+	}
+	return keys
+}()
 
 // FuzzDedupeFields generates field lists from three byte streams:
 // keys picks the per-field key (alphabet size controls duplicate
 // density), vals picks the per-field value kind and operand, widthRaw
 // picks the field count.
 func FuzzDedupeFields(f *testing.F) {
-	// Width boundary seeds: 0, 1, 23/24/25/26 (the crossover), 31/32/33
-	// (the seenArr→map handoff), 40, 64, 80, with dense duplicates.
+	// Width boundary seeds: 0, 1, 23/24/25/26 (the crossover), 31/32/33,
+	// 40, 64, 80, with dense duplicates. The seenArr→map handoff needs
+	// more than 32 distinct keys: see the wide seed below.
 	for _, w := range []int{0, 1, 23, 24, 25, 26, 31, 32, 33, 40, 64, 80} {
 		// byte 0 carries the width; byte 1 picks a 4-key alphabet
 		// (size = 1 + keyBytes[1]), and keys cycle k0-k3 densely.
@@ -702,6 +729,14 @@ func FuzzDedupeFields(f *testing.F) {
 	f.Add([]byte{6, 0, 0, 1, 2, 3, 0}, []byte{0, 1, 9, 9, 9, 9, 2})               // width 6, dup at first+last
 	f.Add([]byte{}, []byte{})                                                     // empty program
 	f.Add([]byte{7, 7, 1, 2, 3, 4, 5, 6}, []byte{10, 10, 10, 10, 10, 10, 10, 10}) // width 7, seven unique keys (8-key alphabet)
+	f.Add([]byte{6, 9, 8, 9, 8, 9}, []byte{1, 2, 3, 4, 5, 6})                     // width 6, the digest collision pair
+	// width 80 over the full alphabet: 64 distinct keys, then duplicates.
+	wide := make([]byte, 0, 82)
+	wide = append(wide, 80, byte(len(dedupeKeys)-1))
+	for i := range 80 {
+		wide = append(wide, byte(i))
+	}
+	f.Add(wide, []byte{1, 2, 3})
 
 	f.Fuzz(func(t *testing.T, keyBytes []byte, valBytes []byte) {
 		fields := dedupeFieldsFromBytes(keyBytes, valBytes)
@@ -719,7 +754,7 @@ func dedupeFieldsFromBytes(keyBytes, valBytes []byte) []Field {
 	}
 	size := 1
 	if len(keyBytes) > 1 {
-		size = 1 + int(keyBytes[1])%len(dedupeKeys) // 1-8 keys
+		size = 1 + int(keyBytes[1])%len(dedupeKeys) // 1-64 keys
 	}
 	fields := make([]Field, 0, width)
 	for i := range width {
@@ -833,12 +868,12 @@ func TestDedupeFieldsProperty(t *testing.T) {
 		verifyDedupeFields(t, fields)
 	}
 	for width := range 81 {
-		for _, size := range []int{1, 2, 4, 8} {
+		for _, size := range []int{1, 2, 4, 8, 40, len(dedupeKeys)} {
 			check(width, size)
 		}
 	}
 	// random extra sweeps
 	for range 500 {
-		check(rng.IntN(81), 1+rng.IntN(8))
+		check(rng.IntN(81), 1+rng.IntN(len(dedupeKeys)))
 	}
 }

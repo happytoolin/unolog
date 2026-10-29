@@ -1524,34 +1524,37 @@ func TestCrashStartOnCanceledContext(t *testing.T) {
 // ════════════════════════════════════════════════════════════════════
 
 // The Encoded() contract: concurrent callers race benignly and share
-// the winner's buffer. Pin it hard under -race: 16 goroutines, all
-// must return the same bytes.
+// the winner's buffer. Pin it hard under -race: 16 goroutines start
+// together on fresh records, and every first call (CAS losers included)
+// must return the winner's buffer, not only equal bytes.
 func TestCrashConcurrentEncoded(t *testing.T) {
 	fields := make([]Field, 64)
 	for i := range fields {
 		fields[i] = fieldOf(fmt.Sprintf("k%d", i), i)
 	}
-	rec := recOf(LevelInfo, "m", fields...)
 
 	const n = 16
-	const iters = 50
-	var wg sync.WaitGroup
-	lines := make([][]byte, n)
-	for g := range n {
-		wg.Go(func() {
-			for range iters {
+	for round := range 200 {
+		rec := recOf(LevelInfo, "m", fields...)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		lines := make([][]byte, n)
+		for g := range n {
+			wg.Go(func() {
+				<-start
 				lines[g] = rec.Encoded()
-			}
-		})
-	}
-	wg.Wait()
-	for g := 1; g < n; g++ {
-		if !bytes.Equal(lines[g], lines[0]) {
-			t.Fatalf("goroutine %d got different bytes", g)
+			})
 		}
-	}
-	if !json.Valid(lines[0]) {
-		t.Fatalf("line invalid: %s", lines[0])
+		close(start)
+		wg.Wait()
+		for g := 1; g < n; g++ {
+			if &lines[g][0] != &lines[0][0] {
+				t.Fatalf("round %d: goroutine %d got its own buffer, not the winner's", round, g)
+			}
+		}
+		if !json.Valid(lines[0]) {
+			t.Fatalf("line invalid: %s", lines[0])
+		}
 	}
 }
 

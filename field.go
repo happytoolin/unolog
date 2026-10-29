@@ -206,10 +206,6 @@ func Duration(key string, value time.Duration) Field {
 // Any returns a field for value with the same type mapping Add uses.
 func Any(key string, value any) Field { return fieldOf(key, value) }
 
-// Typed field constructors for the canonical annotations (no boxing).
-func fieldStr(key, value string) Field     { return String(key, value) }
-func fieldInt64(key string, v int64) Field { return Int64(key, v) }
-
 // valueOf converts a Field back to an any, mirroring the v0 map-based
 // values (used by Lookup and the TestSink).
 func valueOf(f Field) any {

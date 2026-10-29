@@ -51,6 +51,12 @@ sink := uzap.New(logger)
 
 The adapter maps unolog levels to zap debug, info, warn, and error levels. It uses zap's checked-entry path, so the existing core decides whether the event is enabled. It forwards unolog values through typed zap field constructors.
 
+A user field whose key the encoder writes itself is renamed to `fields.<key>`. `New` assumes the keys of `zap.NewProductionEncoderConfig()` (`ts`, `level`, `logger`, `caller`, `msg`, `stacktrace`). When the logger uses another encoder config, pass it:
+
+```go
+sink := uzap.NewWithEncoderConfig(logger, encoderConfig)
+```
+
 The application still owns logger lifecycle. Keep its existing `Sync` policy. Do not call `Sync` from a sink or on every event.
 
 ## Avoid duplicate logs

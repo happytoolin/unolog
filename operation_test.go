@@ -579,6 +579,123 @@ func TestLevelSamplingRates(t *testing.T) {
 	}
 }
 
+// A start-metadata key the request writes itself wins over the
+// OperationStart value, and the line carries it once.
+func TestRequestStartMetadataOverridesWin(t *testing.T) {
+	var line []byte
+	rt := MustCompile(Config{SamplingRate: 1, Sink: sinkFunc(func(_ context.Context, rec *Record) {
+		line = bytes.Clone(rec.Encoded())
+	})})
+	op := Start(context.Background(), rt, OperationStart{
+		Domain: DomainJob, Name: "start", ID: "id-start", Source: "src-start", Attempt: 2, MaxAttempts: 5,
+	})
+	Add(op.Context(),
+		KeyOpDomain, "custom", KeyOpName, "user", KeyOpID, "id-user",
+		KeyOpSource, "src-user", KeyOpAttempt, 7, KeyOpMaxAttempts, 9)
+	if !op.End(nil) {
+		t.Fatal("End dropped the event")
+	}
+	obj, members := decodeLineStrict(t, line)
+	want := map[string]string{
+		KeyOpDomain: `"custom"`, KeyOpName: `"user"`, KeyOpID: `"id-user"`,
+		KeyOpSource: `"src-user"`, KeyOpAttempt: `7`, KeyOpMaxAttempts: `9`,
+	}
+	for key, val := range want {
+		if got := string(obj[key]); got != val {
+			t.Errorf("%s = %s, want %s", key, got, val)
+		}
+	}
+	if len(obj) != len(members) {
+		t.Fatalf("line has duplicate members: %v", memberKeys(members))
+	}
+}
+
+// The sampler sees the last write of each canonical key that has the
+// expected kind. A later write of another kind does not erase it.
+func TestSampleInputUsesLastTypedWrite(t *testing.T) {
+	var got SampleInput
+	rt, _ := testRT(t, func(c *Config) {
+		c.Sampler = func(in SampleInput) bool { got = in; return true }
+	})
+	op := Start(t.Context(), rt, OperationStart{Domain: DomainHTTP})
+	Add(op.Context(),
+		KeyHTTPMethod, "GET", KeyHTTPPath, "/a", KeyHTTPStatus, 200, KeyOpName, "first", KeyOpOutcome, string(OutcomeFailure))
+	Add(op.Context(),
+		KeyHTTPMethod, "POST", KeyHTTPPath, "/b", KeyHTTPStatus, 201, KeyOpName, "second", KeyOpOutcome, string(OutcomeRetry))
+	Add(op.Context(),
+		KeyHTTPMethod, 1, KeyHTTPPath, 2, KeyHTTPStatus, "x", KeyOpName, 3, KeyOpOutcome, 4)
+	op.End(nil)
+	want := SampleInput{Operation: "second", Outcome: OutcomeRetry, Code: 201, StatusCode: 201, Method: "POST", Path: "/b"}
+	if got.Operation != want.Operation || got.Outcome != want.Outcome || got.Code != want.Code ||
+		got.StatusCode != want.StatusCode || got.Method != want.Method || got.Path != want.Path {
+		t.Fatalf("sampler input %+v, want %+v", got, want)
+	}
+
+	// Non-HTTP operations take Code from op.code with the same rule.
+	op = Start(t.Context(), rt, OperationStart{Domain: DomainJob})
+	Add(op.Context(), KeyOpCode, 7)
+	Add(op.Context(), KeyOpCode, 9)
+	Add(op.Context(), KeyOpCode, "x")
+	op.End(nil)
+	if got.Code != 9 {
+		t.Fatalf("job sampler Code = %d, want 9", got.Code)
+	}
+}
+
+// A status of 500 or more is a failure. 499 is not.
+func TestStatusFailureBoundary(t *testing.T) {
+	for code, want := range map[int]string{499: string(OutcomeSuccess), 500: string(OutcomeFailure)} {
+		rt, ts := testRT(t, nil)
+		op := Start(t.Context(), rt, OperationStart{Domain: DomainHTTP})
+		Add(op.Context(), KeyHTTPStatus, code)
+		op.End(nil)
+		if got, _ := ts.Events()[0].Lookup(KeyOpOutcome); got != want {
+			t.Errorf("status %d: outcome %v, want %s", code, got, want)
+		}
+	}
+}
+
+// Start metadata is written for the smallest valid values: attempt 1 of 1.
+func TestStartMetadataSmallestValues(t *testing.T) {
+	rt, ts := testRT(t, nil)
+	op := Start(t.Context(), rt, OperationStart{Domain: DomainJob, Source: "queue", Attempt: 1, MaxAttempts: 1})
+	op.End(nil)
+	ev := ts.Events()[0]
+	for key, want := range map[string]any{KeyOpSource: "queue", KeyOpAttempt: int64(1), KeyOpMaxAttempts: int64(1)} {
+		if got, ok := ev.Lookup(key); !ok || got != want {
+			t.Errorf("%s = %v (%v), want %v", key, got, ok, want)
+		}
+	}
+}
+
+// A fractional rate keeps about that share of healthy events. The bounds
+// are more than ten standard deviations wide, so the test does not flake,
+// but they catch an inverted comparison (which keeps 1-rate).
+func TestFractionalSamplingRateKeepsShare(t *testing.T) {
+	const n, rate = 10000, 0.1
+	const lo, hi = 700, 1300
+	rt, _ := testRT(t, func(c *Config) {
+		c.SamplingRate = rate
+		c.Sink = sinkFunc(func(context.Context, *Record) {})
+	})
+	sampler := RateSampler(rate)
+	var kept, sampled int
+	for range n {
+		if Start(context.Background(), rt, OperationStart{}).End(nil) {
+			kept++
+		}
+		if sampler(SampleInput{}) {
+			sampled++
+		}
+	}
+	if kept < lo || kept > hi {
+		t.Fatalf("SamplingRate %v kept %d of %d events, want %d..%d", rate, kept, n, lo, hi)
+	}
+	if sampled < lo || sampled > hi {
+		t.Fatalf("RateSampler(%v) kept %d of %d inputs, want %d..%d", rate, sampled, n, lo, hi)
+	}
+}
+
 func TestDomainPolicySamplingRate(t *testing.T) {
 	rate := 1.0
 	rt, ts := testRT(t, func(c *Config) {

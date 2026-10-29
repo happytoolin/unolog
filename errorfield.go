@@ -205,7 +205,16 @@ func isComparableError(err error) bool {
 	if err == nil {
 		return true
 	}
-	return reflect.ValueOf(err).Comparable()
+	// Type.Comparable is static and free. Only a struct or an array can
+	// hold an interface whose dynamic value makes == panic, so only those
+	// need Value.Comparable, which allocates on every call.
+	t := reflect.TypeOf(err)
+	switch t.Kind() {
+	case reflect.Struct, reflect.Array:
+		return t.Comparable() && reflect.ValueOf(err).Comparable()
+	default:
+		return t.Comparable()
+	}
 }
 
 type errorReference struct {
@@ -363,13 +372,9 @@ func messageValue(field reflect.Value) (any, bool) {
 		}
 		return text, true
 	default:
-		if field.Kind() == reflect.Interface && !field.IsNil() {
-			inner := field.Elem()
-			if inner.IsValid() && inner.CanInterface() {
-				return inner.Interface(), true
-			}
-		}
-		return value, true
+		// Interface returns the dynamic value of an interface field, so
+		// nil here is an unset Message: Error() is the better text.
+		return value, value != nil
 	}
 }
 

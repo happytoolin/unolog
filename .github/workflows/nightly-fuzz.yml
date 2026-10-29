@@ -51,7 +51,11 @@ jobs:
           cache-dependency-path: '**/go.sum'
 
       - name: Fuzz every target for 10 minutes
-        run: scripts/fuzz.sh -t 10m "${{ matrix.dir }}"
+        env:
+          FUZZ_FAILURES_FILE: ${{ runner.temp }}/fuzz-report/failed-${{ strategy.job-index }}.txt
+        run: |
+          mkdir -p "$(dirname "$FUZZ_FAILURES_FILE")"
+          scripts/fuzz.sh -t 10m "${{ matrix.dir }}"
 
       - name: Upload failing inputs
         if: failure()
@@ -61,21 +65,48 @@ jobs:
           path: ${{ matrix.dir }}/testdata/fuzz/
           if-no-files-found: ignore
 
+      # The report job lists these "dir target" lines in the issue.
+      - name: Upload failed target list
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-report-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/fuzz-report/
+          if-no-files-found: ignore
+
   report:
     needs: fuzz
     if: failure()
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       issues: write
     steps:
+      - name: Download failed target lists
+        uses: actions/download-artifact@v4
+        continue-on-error: true # a job can fail before it writes a list
+        with:
+          pattern: fuzz-report-*
+          path: fuzz-report
+          merge-multiple: true
+
       - name: Open an issue for the failed run
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const path = require('path');
             const run = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const failed = fs.existsSync('fuzz-report')
+              ? fs.readdirSync('fuzz-report').flatMap((f) =>
+                  fs.readFileSync(path.join('fuzz-report', f), 'utf8').split('\n').filter(Boolean))
+              : [];
+            const list = failed.length
+              ? failed.map((t) => `- \`${t}\``).join('\n')
+              : '- No target list: a job failed outside the fuzz step. See the run.';
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `Nightly fuzz failures (${new Date().toISOString().slice(0, 10)})`,
-              body: `One or more fuzz targets failed. The failed jobs and the failing inputs (artifacts) are in ${run}.\n\nReproduce locally with \`scripts/fuzz.sh -t 10m <package-dir>\`, then commit the input under \`testdata/fuzz/\` as a regression test.`,
+              body: `Failed targets (package dir, target):\n\n${list}\n\nThe job logs and the failing inputs (artifacts) are in ${run}.\n\nReproduce locally with \`scripts/fuzz.sh -t 10m <package-dir>\`, then commit the input under \`testdata/fuzz/\` as a regression test.`,
             });

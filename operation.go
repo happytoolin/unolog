@@ -321,6 +321,7 @@ func (op *Operation) commit(in *commitInput) bool {
 	rec.msg = resolveEventMessage(rt.message, start.Domain, ev.msg)
 	rec.fields = ev.fields
 	rec.completedAt = in.now
+	rec.maxValueBytes = ev.limits.maxValueBytes
 	return rt.emit(op.ctx, rec)
 }
 
@@ -344,22 +345,22 @@ func shouldWriteHealthy(rt *Runtime, policy OperationPolicy, in SampleInput) boo
 // route-name contract in the HTTP integrations depends on this).
 func appendStartFields(start OperationStart, scan walScan, add func(Field)) {
 	if !scan.hasDomain {
-		add(fieldStr(KeyOpDomain, string(start.Domain)))
+		add(String(KeyOpDomain, string(start.Domain)))
 	}
 	if !scan.hasName {
-		add(fieldStr(KeyOpName, start.Name))
+		add(String(KeyOpName, start.Name))
 	}
 	if !scan.hasID && start.ID != "" {
-		add(fieldStr(KeyOpID, start.ID))
+		add(String(KeyOpID, start.ID))
 	}
 	if !scan.hasSource && start.Source != "" {
-		add(fieldStr(KeyOpSource, start.Source))
+		add(String(KeyOpSource, start.Source))
 	}
 	if !scan.hasAttempt && start.Attempt > 0 {
-		add(fieldInt64(KeyOpAttempt, int64(start.Attempt)))
+		add(Int64(KeyOpAttempt, int64(start.Attempt)))
 	}
 	if !scan.hasMaxAttempts && start.MaxAttempts > 0 {
-		add(fieldInt64(KeyOpMaxAttempts, int64(start.MaxAttempts)))
+		add(Int64(KeyOpMaxAttempts, int64(start.MaxAttempts)))
 	}
 }
 
@@ -394,16 +395,16 @@ func (op *Operation) annotatePostSeal(in *commitInput) {
 	fields := ev.fields
 	add := func(f Field) { fields = append(fields, f) }
 	appendStartFields(op.start, in.scan, add)
-	add(fieldInt64(KeyDurationMS, in.duration.Milliseconds()))
+	add(Int64(KeyDurationMS, in.duration.Milliseconds()))
 	if op.start.Domain != DomainHTTP && in.scan.hasOpCode {
-		add(fieldInt64(KeyOpCode, int64(in.scan.opCode)))
+		add(Int64(KeyOpCode, int64(in.scan.opCode)))
 	}
-	add(fieldStr(KeyOpOutcome, string(in.outcome)))
+	add(String(KeyOpOutcome, string(in.outcome)))
 	if ev.dropped > 0 {
-		add(fieldInt64(KeyDroppedFields, ev.dropped))
+		add(Int64(KeyDroppedFields, ev.dropped))
 	}
 	if ev.truncated > 0 {
-		add(fieldInt64(KeyTruncatedValues, ev.truncated))
+		add(Int64(KeyTruncatedValues, ev.truncated))
 	}
 	ev.fields = fields
 }
