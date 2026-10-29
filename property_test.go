@@ -1344,7 +1344,7 @@ func buildModel(prog lifeProgram) *lifeModel {
 			}
 		case opSetRoute:
 			if route := mustValue[string](o.val); route != "" {
-				m.append(fieldStr("http.route", route))
+				m.append(String("http.route", route))
 			}
 		case opEndErr:
 			if e, ok := o.val.(error); ok && e != nil {
@@ -1514,18 +1514,18 @@ func (m *lifeModel) endAnnotations() {
 		m.append(Field{key: "error", kind: KindAny, val: modelErrorField(fmt.Errorf("panic: %v", m.endPayload))})
 	}
 	if !m.wrote("op.domain") {
-		m.append(fieldStr("op.domain", string(normalizeDomain(m.start))))
+		m.append(String("op.domain", string(normalizeDomain(m.start))))
 	}
 	if !m.wrote("op.name") {
-		m.append(fieldStr("op.name", "n"))
+		m.append(String("op.name", "n"))
 	}
 	_, _, _, _, opCode, hasOpCode := m.scan()
 	if normalizeDomain(m.start) != DomainHTTP && hasOpCode {
-		m.append(fieldInt64("op.code", int64(opCode)))
+		m.append(Int64("op.code", int64(opCode)))
 	}
 	// The resolved outcome is always written last (annotatePostSeal);
 	// the scan above ran before it, so this append cannot feed back.
-	m.append(fieldStr("op.outcome", string(m.outcome())))
+	m.append(String("op.outcome", string(m.outcome())))
 }
 
 // wrote reports whether the model WAL already carries a write under

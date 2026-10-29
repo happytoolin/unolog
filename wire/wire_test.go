@@ -50,6 +50,25 @@ func TestLastIndicesResolvesLastWriteWins(t *testing.T) {
 	}
 }
 
+// A key written only before the duplicates must survive the wide path:
+// the backward walk passes duplicates and keeps going.
+func TestLastIndicesWideKeepsEarlyUniqueKey(t *testing.T) {
+	items := make([]item, 0, 1+2*NarrowLimit)
+	items = append(items, item{"first"})
+	for i := range 2 * NarrowLimit {
+		items = append(items, item{fmt.Sprintf("k%d", i%NarrowLimit)})
+	}
+	got := LastIndices(items, func(it item) string { return it.k })
+	if len(got) != NarrowLimit+1 || got[0] != 0 {
+		t.Fatalf("indices = %v, want 0, then the last %d positions", got, NarrowLimit)
+	}
+	for i, idx := range got[1:] {
+		if want := NarrowLimit + 1 + i; idx != want {
+			t.Fatalf("indices = %v, want %d at %d", got, want, i+1)
+		}
+	}
+}
+
 // TestLastIndicesNarrowPathMatchesWidePath pins the crossover: both
 // sides of NarrowLimit must resolve identically (the golden parity
 // tests rely on bridge and core agreeing).

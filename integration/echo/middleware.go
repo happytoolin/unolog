@@ -61,8 +61,7 @@ func statusFromEchoError(err error) int {
 	if err == nil {
 		return 0
 	}
-	var httpErr *goecho.HTTPError
-	if errors.As(err, &httpErr) {
+	if httpErr, ok := errors.AsType[*goecho.HTTPError](err); ok {
 		return httpErr.Code
 	}
 	return http.StatusInternalServerError

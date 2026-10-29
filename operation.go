@@ -48,7 +48,7 @@ func Start(ctx context.Context, rt *Runtime, start OperationStart) *Operation {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ev := newEvent()
+	ev := newEvent(rt.eventLimits())
 	op := &Operation{
 		rt:    rt,
 		start: normalizedOperationStart(start),
@@ -73,10 +73,12 @@ func (op *Operation) Context() context.Context {
 // End finalizes the operation from the deferred error pointer and panic
 // state, committing exactly one event, and returns whether an event was
 // emitted. One-shot: a second call is a no-op returning the first
-// result (false, by definition, if the first call crashed mid-commit —
-// a panic in the sampler or a sink never publishes an emission). If the
-// surrounding function is panicking, End records the panic, commits,
-// and re-panics.
+// result. If the surrounding function is panicking, End records the
+// panic, commits, and re-panics with the original value.
+//
+// A panicking Sink or Sampler never escapes End: the panic is reported
+// to Config.ErrorHandler as a *PanicError. A sampler panic keeps the
+// event; a sink panic makes End report false.
 //
 // End MUST be deferred directly (defer op.End(&err)) — the closure form
 // silently disables panic capture. Reentrant use is not supported: a
@@ -207,16 +209,20 @@ type walScan struct {
 	hasMaxAttempts bool
 }
 
+// resolvesOutcome reports whether op.outcome write f is one End
+// resolves from: a valid outcome string.
+func resolvesOutcome(f *Field) bool {
+	return f.kind == KindString && IsValidOutcome(Outcome(f.str))
+}
+
 func scanWAL(ev *event) walScan {
 	var s walScan
 	for _, f := range slices.Backward(ev.fields) {
 		switch f.key {
 		case KeyOpOutcome:
-			if !s.hasOutcome && f.kind == KindString {
-				if o := Outcome(f.str); IsValidOutcome(o) {
-					s.outcome = o
-					s.hasOutcome = true
-				}
+			if !s.hasOutcome && resolvesOutcome(&f) {
+				s.outcome = Outcome(f.str)
+				s.hasOutcome = true
 			}
 		case KeyHTTPStatus:
 			if !s.hasCode && f.kind == KindInt {
@@ -302,7 +308,7 @@ func (op *Operation) commit(in *commitInput) bool {
 		sampleIn := buildSampleInput(ev, start, in, level)
 		if !sampleIn.HasError {
 			if rt.sampler != nil {
-				if !rt.sampler(sampleIn) {
+				if !rt.sample(sampleIn) {
 					return false
 				}
 			} else if !shouldWriteHealthy(rt, policy, sampleIn) {
@@ -319,8 +325,8 @@ func (op *Operation) commit(in *commitInput) bool {
 	rec.msg = resolveEventMessage(rt.message, start.Domain, ev.msg)
 	rec.fields = ev.fields
 	rec.completedAt = in.now
-	rt.emit(op.ctx, rec)
-	return true
+	rec.maxValueBytes = ev.limits.maxValueBytes
+	return rt.emit(op.ctx, rec)
 }
 
 // shouldWriteHealthy applies the compiled rate configuration for
@@ -343,22 +349,22 @@ func shouldWriteHealthy(rt *Runtime, policy OperationPolicy, in SampleInput) boo
 // route-name contract in the HTTP integrations depends on this).
 func appendStartFields(start OperationStart, scan walScan, add func(Field)) {
 	if !scan.hasDomain {
-		add(fieldStr(KeyOpDomain, string(start.Domain)))
+		add(String(KeyOpDomain, string(start.Domain)))
 	}
 	if !scan.hasName {
-		add(fieldStr(KeyOpName, start.Name))
+		add(String(KeyOpName, start.Name))
 	}
 	if !scan.hasID && start.ID != "" {
-		add(fieldStr(KeyOpID, start.ID))
+		add(String(KeyOpID, start.ID))
 	}
 	if !scan.hasSource && start.Source != "" {
-		add(fieldStr(KeyOpSource, start.Source))
+		add(String(KeyOpSource, start.Source))
 	}
 	if !scan.hasAttempt && start.Attempt > 0 {
-		add(fieldInt64(KeyOpAttempt, int64(start.Attempt)))
+		add(Int64(KeyOpAttempt, int64(start.Attempt)))
 	}
 	if !scan.hasMaxAttempts && start.MaxAttempts > 0 {
-		add(fieldInt64(KeyOpMaxAttempts, int64(start.MaxAttempts)))
+		add(Int64(KeyOpMaxAttempts, int64(start.MaxAttempts)))
 	}
 }
 
@@ -392,12 +398,24 @@ func (op *Operation) annotatePostSeal(in *commitInput) {
 
 	fields := ev.fields
 	add := func(f Field) { fields = append(fields, f) }
-	appendStartFields(op.start, in.scan, add)
-	add(fieldInt64(KeyDurationMS, in.duration.Milliseconds()))
+	// The OperationStart strings join here, after the seal, so they take
+	// the value limit here: the worker integration fills them from job
+	// metadata.
+	appendStartFields(op.start, in.scan, func(f Field) {
+		ev.limitValue(&f)
+		add(f)
+	})
+	add(Int64(KeyDurationMS, in.duration.Milliseconds()))
 	if op.start.Domain != DomainHTTP && in.scan.hasOpCode {
-		add(fieldInt64(KeyOpCode, int64(in.scan.opCode)))
+		add(Int64(KeyOpCode, int64(in.scan.opCode)))
 	}
-	add(fieldStr(KeyOpOutcome, string(in.outcome)))
+	add(String(KeyOpOutcome, string(in.outcome)))
+	if ev.dropped > 0 {
+		add(Int64(KeyDroppedFields, ev.dropped))
+	}
+	if ev.truncated > 0 {
+		add(Int64(KeyTruncatedValues, ev.truncated))
+	}
 	ev.fields = fields
 }
 

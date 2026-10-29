@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"testing"
 	"time"
 )
@@ -78,7 +79,7 @@ func BenchmarkRecordEncodeWrite12(b *testing.B) {
 	fields := make([]Field, 12)
 	keys := []string{"http.method", "http.path", "http.route", "http.status", "op.domain", "op.name", "op.outcome", "op.code", "duration_ms", "request_id", "user_id", "cache.hit"}
 	for i, k := range keys {
-		fields[i] = fieldStr(k, "v")
+		fields[i] = String(k, "v")
 	}
 	completedAt := time.Now()
 	b.ReportAllocs()
@@ -100,13 +101,19 @@ func BenchmarkRecordEncodeWrite12(b *testing.B) {
 // stopped, so the timed region is only the operation under test.
 const benchPre = 4096
 
-func benchField() Field { return fieldStr("user_id", "u_8472") }
+// benchWideLimits lifts the field cap for the benchmarks that grow one
+// event to benchPre fields: under the default cap most of those appends
+// would take the at-limit path, which BenchmarkEventAppendAtLimit
+// measures on its own.
+var benchWideLimits = limits{maxFields: math.MaxInt, maxValueBytes: DefaultMaxValueBytes}
+
+func benchField() Field { return String("user_id", "u_8472") }
 
 // BenchmarkEventAppendGuarded is the append hot path: one atomic load,
 // one mutex round trip, one slice append. Every open event is guarded,
 // so this is the per-field cost the request pays.
 func BenchmarkEventAppendGuarded(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(benchWideLimits)
 	ev.fields = make([]Field, 0, benchPre)
 	gen := ev.state.Load() >> walStateBits
 	f := benchField()
@@ -123,12 +130,30 @@ func BenchmarkEventAppendGuarded(b *testing.B) {
 	ev.release()
 }
 
+// BenchmarkEventAppendAtLimit is the append on a full event: the key
+// already exists, so the value replaces it in place after a backward
+// scan that ends at the newest field.
+func BenchmarkEventAppendAtLimit(b *testing.B) {
+	ev := newEvent(defaultLimits)
+	gen := ev.state.Load() >> walStateBits
+	f := benchField()
+	for range DefaultMaxFields {
+		ev.append(gen, f)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ev.append(gen, f)
+	}
+	ev.release()
+}
+
 // BenchmarkEventAppendStaleGen is the straggler no-op for a recycled
 // event: generation mismatch, one load and return.
 func BenchmarkEventAppendStaleGen(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	gen := ev.state.Load() >> walStateBits
-	ev.reset() // bump the generation: the held gen is now stale
+	ev.reset(defaultLimits) // bump the generation: the held gen is now stale
 	f := benchField()
 	b.ReportAllocs()
 	for b.Loop() {
@@ -140,7 +165,7 @@ func BenchmarkEventAppendStaleGen(b *testing.B) {
 // BenchmarkEventAppendSealed is the straggler no-op for a sealed event:
 // generation matches, state says sealed — the write must not land.
 func BenchmarkEventAppendSealed(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	gen := ev.state.Load() >> walStateBits
 	ev.seal()
 	f := benchField()
@@ -157,7 +182,7 @@ func BenchmarkEventSeal(b *testing.B) {
 	events := make([]*event, benchPre)
 	rebuild := func() {
 		for i := range events {
-			events[i] = newEvent()
+			events[i] = newEvent(defaultLimits)
 		}
 	}
 	rebuild()
@@ -179,10 +204,10 @@ func BenchmarkEventSeal(b *testing.B) {
 // BenchmarkEventSnapshotFields is the watchdog's read of a WAL: copy of
 // the current tail under the append mutex.
 func BenchmarkEventSnapshotFields(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	gen := ev.state.Load() >> walStateBits
 	for range 12 {
-		ev.append(gen, fieldStr("k", "v"))
+		ev.append(gen, String("k", "v"))
 	}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -195,7 +220,7 @@ func BenchmarkEventSnapshotFields(b *testing.B) {
 // structuredErrorField builds the map (message, type, cause) that every
 // failing request pays at End.
 func BenchmarkEventSetError(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(benchWideLimits)
 	ev.fields = make([]Field, 0, benchPre)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	err := errors.New("bench failure")
@@ -214,7 +239,7 @@ func BenchmarkEventSetError(b *testing.B) {
 
 // BenchmarkEventSetMessage is the message override on an open event.
 func BenchmarkEventSetMessage(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -226,7 +251,7 @@ func BenchmarkEventSetMessage(b *testing.B) {
 // BenchmarkEventSetLevel is the requested-level floor on an open event —
 // the per-request write the middleware shapes make.
 func BenchmarkEventSetLevel(b *testing.B) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	b.ReportAllocs()
 	for b.Loop() {
@@ -240,7 +265,7 @@ func BenchmarkEventSetLevel(b *testing.B) {
 func BenchmarkEventReleaseRecycle(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		ev := newEvent()
+		ev := newEvent(defaultLimits)
 		ev.release()
 	}
 }

@@ -39,7 +39,9 @@ go get github.com/happytoolin/unolog/adapter/slog
 go get github.com/happytoolin/unolog/integration/std
 ```
 
-Install only the adapter and integration packages you use.
+Install only the adapter and integration packages you use. The modules need
+Go 1.25 or later, except `integration/gin`, `integration/echo`, and
+`integration/fiberv3`, which need Go 1.26 because their dependencies do.
 
 ## Agent Skill
 
@@ -141,6 +143,9 @@ use `unolog.Compile` for config from files, `unolog.MustCompile` for literals.
 - `OperationPolicies`: optional per-domain level/sampling policy for all lifecycle domains, including HTTP and background operations; domain sampling overrides generic level/default sampling
 - Precedence when both are set: a domain policy's `SamplingRate` overrides `LevelSamplingRates` for that domain (v0 behavior); `LevelSamplingRates` overrides the global `SamplingRate`
 - `Message`: final log message (defaults to `unolog.DefaultMessage` for HTTP and `unolog.DefaultOperationMessage` for non-HTTP)
+- `MaxFields`: fields one event can hold (default `unolog.DefaultMaxFields`, 256; `-1` removes the limit)
+- `MaxValueBytes`: bytes per string value (default `unolog.DefaultMaxValueBytes`, 32 KiB; `-1` removes the limit)
+- `ErrorHandler`: receives contained sink and sampler panics and failed sink writes (default: stderr, at most once per second)
 
 Notes:
 
@@ -148,6 +153,66 @@ Notes:
 - If no sink is configured, requests still run; logging is skipped.
 - Sampling behavior is consistent across all integrations (`net/http`, `gin`, `echo`, `fiber`, and `fiber v3`).
 - `unolog.SetMessage(ctx, "...")` overrides `Config.Message` for a single event.
+
+### Limits and failure handling
+
+The defaults bound the two common ways an event grows, so a loop or a large
+value cannot make one request hold unbounded memory or write an unbounded
+line. They do not keep a line under every pipeline limit: an event at both
+defaults can encode to megabytes, and Docker's `json-file` log driver, for
+example, splits lines at 16 KiB. Set the limits to match your pipeline:
+
+- **Field limit.** `MaxFields` bounds the distinct keys of an event. Repeated
+  writes to one key do not use it up: when the event is full, a write to a
+  key the event holds replaces its value in place, and a write with a new key
+  first removes the older writes of repeated keys. A new key that still does
+  not fit is dropped and counted in `unolog.dropped_fields`. Canonical keys
+  (the `unolog.Key*` constants, such as `http.status`, `op.outcome`, `error`,
+  and `panic`, except the two `unolog.*` counter keys) are never dropped. Other keys with the same prefix, such as
+  `http.user_agent`, are ordinary keys.
+- **Value limit.** `MaxValueBytes` bounds string values: string fields, the
+  string members of a `map[string]any` field (so the structured `error` and
+  `panic` fields), and the `SetMessage` text. A longer value is cut at a
+  UTF-8 boundary and counted in `unolog.truncated_values`. The text of an
+  error value added with `Add` is cut when the canonical line is encoded
+  (`JSONSink`, `AsyncJSONSink`, the zerolog adapter's `NewCanonical`, and
+  `Record.Encoded`); that cut is not counted. The slog and zap adapters and
+  the zerolog adapter's `New` write the error text without the cut.
+- **Not covered.** Field keys, nested maps, slices, structs, other `any`
+  values, and the `OperationStart` fields are not limited. Keep them small,
+  or convert them to strings before you add them.
+
+The two counter fields appear only when a limit changed the event. Treat
+them as a signal to fix the code or to raise the limit. A negative limit
+removes that limit.
+
+Logging never crashes the request. A panicking `Sink` or `Sampler` does not
+escape `End`: unolog contains it and reports a `*unolog.PanicError` (the
+recovered value and its stack; `errors.Is` matches `unolog.ErrSinkPanic` or
+`unolog.ErrSamplerPanic`) to `ErrorHandler`. A panic in `ErrorHandler` itself
+is recovered, and the report goes to stderr. A sampler panic keeps the event.
+A sink panic makes `End` return `false`, but delivery can be partial: a sink
+that writes to several destinations may have written to some of them before
+it panicked, so do not retry the write. The application's own panic still
+re-panics with its original value. A failed or short write from `JSONSink`
+(or any sink that implements `unolog.FallibleSink`) also goes to
+`ErrorHandler`, matching `unolog.ErrSinkWrite` and the writer's error, and
+`End` returns `false`. After a short write, `JSONSink` and `AsyncJSONSink`
+write a newline, so the next line starts on its own line. A type that
+embeds a `FallibleSink` and overrides `Write` must also override `WriteErr`,
+or `End` calls the embedded `WriteErr` and skips the override. A type that
+embeds `*unolog.JSONSink` is an ordinary sink: `End` calls its `Write`.
+
+```go
+rt, err := unolog.Compile(unolog.Config{
+	Sink:          sink,
+	SamplingRate:  1,
+	MaxValueBytes: 8 << 10, // match an 8 KiB pipeline field limit
+	ErrorHandler: func(err error) {
+		internalErrors.Inc() // export as a metric instead of stderr
+	},
+})
+```
 
 ### Per-request Message Override
 
@@ -222,6 +287,22 @@ mw := std.Middleware(unolog.MustCompile(unolog.Config{
 `unolog.Add` accepts one or more key/value pairs:
 `unolog.Add(ctx, "k1", v1, "k2", v2, "k3", v3)`.
 
+`Add` boxes each value into an `interface{}`, which allocates for most
+dynamic values. On hot paths, use typed fields instead: `AddFields` does not
+allocate.
+
+```go
+unolog.AddFields(ctx,
+	unolog.String("user_id", userID),
+	unolog.Int("items", len(cart.Items)),
+	unolog.Duration("db_time", dbTime),
+)
+```
+
+The constructors are `String`, `Int`, `Int64`, `Uint64`, `Float64`, `Bool`,
+`Time`, `Duration`, and `Any` (the `Add` type mapping). Both forms produce the
+same wire output.
+
 `unolog.SampleInput.Method`, `Path`, and `StatusCode` are HTTP compatibility fields.
 For non-HTTP operations use `Domain`, `Operation`, `Outcome`, and `Code`.
 
@@ -295,6 +376,16 @@ hooks, sampling, and rendering customization are not needed.
 Fields arrive in insertion order, deterministically, as typed
 constructors.
 
+A user field whose key the logger writes itself is renamed to
+`fields.<key>`, as the canonical line renames `message`, `time`, and
+`level`, so no output has two members with one key. The slog adapter
+renames `time`, `level`, and `msg`. It does not rename `source`: the
+handler writes its own `source` only with `AddSource`, so do not use a
+`source` field with `AddSource`. The zap adapter's `New`
+renames the keys of `zap.NewProductionEncoderConfig()` (`ts`, `level`,
+`logger`, `caller`, `msg`, `stacktrace`); for an encoder with other keys,
+use `uzap.NewWithEncoderConfig(logger, encoderConfig)`.
+
 ### First-party JSON sink (no logger dependency)
 
 `unolog.NewJSONSink(w io.Writer)` emits the same canonical event shape as the
@@ -311,6 +402,30 @@ sink := unolog.NewJSONSink(os.Stdout)
 The wire format matches `zerolog.New(w).With().Timestamp().Logger()`
 through `adapter/zerolog`, so existing pipelines ingest it unchanged.
 Field order is insertion order — deterministic by construction, identical across every sink.
+A failed or short write goes to `Config.ErrorHandler`, and `End` returns
+`false`.
+
+### Asynchronous JSON sink
+
+`JSONSink` writes on the request goroutine, so a slow writer (a pipe, a
+network connection, a busy disk) makes every request wait.
+`unolog.NewAsyncJSONSink` writes the same lines from one background
+goroutine: the request only copies its line into a buffer.
+
+```go
+sink := unolog.NewAsyncJSONSink(os.Stdout, unolog.AsyncJSONSinkConfig{
+	BufferBytes: 1 << 20, // the default; memory use is at most twice this
+})
+defer sink.Close() // writes the remaining lines and stops the goroutine
+```
+
+The sink never blocks a request. When the buffer is full, it drops the
+line, counts it in `sink.Dropped()`, and reports the drops to its
+`ErrorHandler` (`unolog.ErrSinkFull`). Write errors and writer panics go to
+the same handler. The handler runs on the writer goroutine, so it must not
+call `Close`, or `Flush` with a context that is never done: both wait for
+that goroutine. `Flush(ctx)` waits until the buffered lines are written.
+Use `JSONSink` instead when every line must be written.
 
 ## Performance
 

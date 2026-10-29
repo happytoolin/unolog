@@ -41,25 +41,34 @@ import (
 // ════════════════════════════════════════════════════════════════════
 
 // panickingSampler explodes during commit — inside End, after seal.
+// The panic is contained and reported, and the event is kept: a broken
+// sampler must not hide data.
 func TestCrashPanicInSamplerDuringCommit(t *testing.T) {
-	rt, _ := testRT(t, func(c *Config) {
+	var reported []error
+	rt, ts := testRT(t, func(c *Config) {
 		c.Sampler = func(in SampleInput) bool { panic("sampler boom") }
+		c.ErrorHandler = func(err error) { reported = append(reported, err) }
 	})
 	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "j"})
 	Add(op.Context(), "k", "v")
 
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatal("sampler panic must propagate out of End")
-			}
-		}()
-		_ = op.End(nil)
-	}()
+	if !op.End(nil) {
+		t.Fatal("a sampler panic must keep the event")
+	}
+	if len(ts.Events()) != 1 {
+		t.Fatalf("events = %d, want 1", len(ts.Events()))
+	}
+	if len(reported) != 1 || !errors.Is(reported[0], ErrSamplerPanic) {
+		t.Fatalf("reported = %v, want one ErrSamplerPanic", reported)
+	}
+	var pe *PanicError
+	if !errors.As(reported[0], &pe) || pe.Value != "sampler boom" || len(pe.Stack) == 0 {
+		t.Fatalf("PanicError = %+v", pe)
+	}
 
 	// Second End is the published no-op, and the pool still works.
-	if op.End(nil) {
-		t.Fatal("second End after crash must report not-emitted")
+	if !op.End(nil) {
+		t.Fatal("second End must return the first result")
 	}
 	rt2, ts2 := testRT(t, nil)
 	op2 := Start(context.Background(), rt2, OperationStart{Domain: DomainJob, Name: "j2"})
@@ -213,13 +222,12 @@ func TestCrashDoubleEndAfterPanic(t *testing.T) {
 // A panicking sink must not poison the pool for later requests, even
 // when a straggler write lands between the crash and the next start.
 func TestCrashPanicInSinkWithStragglerAftermath(t *testing.T) {
-	rt := MustCompile(Config{Sink: crashPanicSink{}, SamplingRate: 1})
+	rt := MustCompile(Config{Sink: crashPanicSink{}, SamplingRate: 1, ErrorHandler: func(error) {}})
 	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "j"})
 	Add(op.Context(), "k", "v")
-	func() {
-		defer func() { _ = recover() }()
-		_ = op.End(nil)
-	}()
+	if op.End(nil) {
+		t.Fatal("a panicking sink must make End report false")
+	}
 	// Straggler after the crashed (and released) event: silent no-op.
 	Add(op.Context(), "straggler", true)
 
@@ -792,7 +800,7 @@ func TestCrashAbandonedOperations(t *testing.T) {
 // dropped from the pool at release — behavior, not corruption, is the
 // contract: the wide event itself must still be complete on the wire.
 func TestCrashWideEventPoolCapBoundary(t *testing.T) {
-	rt, ts := testRT(t, nil)
+	rt, ts := testRT(t, unlimited)
 	for _, n := range []int{1023, 1024, 1025, 1100} {
 		op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "wide"})
 		for i := range n {
@@ -1259,7 +1267,7 @@ func TestCrashDeepNesting(t *testing.T) {
 
 func TestCrashMegaFields(t *testing.T) {
 	const n = 100000
-	rt, ts := testRT(t, nil)
+	rt, ts := testRT(t, unlimited)
 	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "mega"})
 	for i := range n {
 		Add(op.Context(), fmt.Sprintf("f%d", i), i)
@@ -1288,7 +1296,7 @@ func TestCrashMegaFields(t *testing.T) {
 
 func TestCrashHugeString(t *testing.T) {
 	big := strings.Repeat("payload\xef\xbb\xbf", 1<<20) // ~5MB
-	rt, ts := testRT(t, nil)
+	rt, ts := testRT(t, unlimited)
 	op := Start(context.Background(), rt, OperationStart{Domain: DomainJob, Name: "big"})
 	Add(op.Context(), "big", big, "sib", 1)
 	_ = op.End(nil)
@@ -1315,7 +1323,7 @@ func evs2Fields(t *testing.T, ts *TestSink) []Field {
 // A few concurrent mega events: memory-bounded stress through the
 // pool, exact isolation.
 func TestCrashConcurrentMegaEvents(t *testing.T) {
-	rt, ts := testRT(t, nil)
+	rt, ts := testRT(t, unlimited)
 	done := make(chan int, 4)
 	for w := range 4 {
 		go func(w int) {
@@ -1516,34 +1524,37 @@ func TestCrashStartOnCanceledContext(t *testing.T) {
 // ════════════════════════════════════════════════════════════════════
 
 // The Encoded() contract: concurrent callers race benignly and share
-// the winner's buffer. Pin it hard under -race: 16 goroutines, all
-// must return the same bytes.
+// the winner's buffer. Pin it hard under -race: 16 goroutines start
+// together on fresh records, and every first call (CAS losers included)
+// must return the winner's buffer, not only equal bytes.
 func TestCrashConcurrentEncoded(t *testing.T) {
 	fields := make([]Field, 64)
 	for i := range fields {
 		fields[i] = fieldOf(fmt.Sprintf("k%d", i), i)
 	}
-	rec := recOf(LevelInfo, "m", fields...)
 
 	const n = 16
-	const iters = 50
-	var wg sync.WaitGroup
-	lines := make([][]byte, n)
-	for g := range n {
-		wg.Go(func() {
-			for range iters {
+	for round := range 200 {
+		rec := recOf(LevelInfo, "m", fields...)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		lines := make([][]byte, n)
+		for g := range n {
+			wg.Go(func() {
+				<-start
 				lines[g] = rec.Encoded()
-			}
-		})
-	}
-	wg.Wait()
-	for g := 1; g < n; g++ {
-		if !bytes.Equal(lines[g], lines[0]) {
-			t.Fatalf("goroutine %d got different bytes", g)
+			})
 		}
-	}
-	if !json.Valid(lines[0]) {
-		t.Fatalf("line invalid: %s", lines[0])
+		close(start)
+		wg.Wait()
+		for g := 1; g < n; g++ {
+			if &lines[g][0] != &lines[0][0] {
+				t.Fatalf("round %d: goroutine %d got its own buffer, not the winner's", round, g)
+			}
+		}
+		if !json.Valid(lines[0]) {
+			t.Fatalf("line invalid: %s", lines[0])
+		}
 	}
 }
 

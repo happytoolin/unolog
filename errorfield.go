@@ -15,20 +15,28 @@ func structuredErrorField(err error) map[string]any {
 	if isTypedNilError(err) {
 		return map[string]any{
 			"message": "<nil>",
-			"type":    fmt.Sprintf("%T", err),
+			"type":    typeName(err),
 		}
 	}
-	field := map[string]any{
-		"message": structuredErrorMessage(err),
-		"type":    fmt.Sprintf("%T", err),
+	cause := deepestUnwrappedError(err)
+	if cause == nil || sameError(cause, err) {
+		return map[string]any{
+			"message": structuredErrorMessage(err),
+			"type":    typeName(err),
+		}
 	}
-
-	if cause := deepestUnwrappedError(err); cause != nil && !sameError(cause, err) {
-		field["cause.message"] = structuredErrorMessage(cause)
-		field["cause.type"] = fmt.Sprintf("%T", cause)
+	return map[string]any{
+		"message":       structuredErrorMessage(err),
+		"type":          typeName(err),
+		"cause.message": structuredErrorMessage(cause),
+		"cause.type":    typeName(cause),
 	}
+}
 
-	return field
+// typeName is fmt's %T rendering for a non-nil value without the fmt
+// machinery: reflect's type string lives in the binary, no allocation.
+func typeName(v any) string {
+	return reflect.TypeOf(v).String()
 }
 
 // isTypedNilError reports whether err is a non-nil interface holding a
@@ -48,7 +56,7 @@ func isTypedNilError(err error) bool {
 
 func structuredPanicField(recovered any) map[string]any {
 	return map[string]any{
-		"type":  fmt.Sprintf("%T", recovered),
+		"type":  typeName(recovered),
 		"value": fmt.Sprint(recovered),
 	}
 }
@@ -91,22 +99,13 @@ const maxUnwrapDepth = 4096
 
 func deepestUnwrappedError(err error) error {
 	current := err
-	seen := make(map[error]struct{})
-	seenRefs := make(map[errorReference]struct{})
+	var visited errorVisits
 	for depth := 0; current != nil; depth++ {
 		if depth >= maxUnwrapDepth {
 			return current
 		}
-		if isComparableError(current) {
-			if _, ok := seen[current]; ok {
-				return current
-			}
-			seen[current] = struct{}{}
-		} else if ref, ok := errorReferenceOf(current); ok {
-			if _, exists := seenRefs[ref]; exists {
-				return current
-			}
-			seenRefs[ref] = struct{}{}
+		if visited.revisit(current) {
+			return current
 		}
 		next := safeUnwrap(current)
 		if next == nil {
@@ -115,6 +114,78 @@ func deepestUnwrappedError(err error) error {
 		current = next
 	}
 	return nil
+}
+
+// inlineVisits is how many visited errors a walk tracks without
+// allocating. Ordinary wrap chains are shorter; deeper or cyclic graphs
+// move to maps.
+const inlineVisits = 8
+
+// errorVisits is the visited set of one error-graph walk. Comparable
+// errors match by ==, reference-backed incomparable errors by their
+// reference, exactly like a map keyed the same way; the first
+// inlineVisits entries live in an array, so short chains never
+// allocate.
+type errorVisits struct {
+	n        int
+	inline   [inlineVisits]errorVisit
+	seen     map[error]struct{}
+	seenRefs map[errorReference]struct{}
+}
+
+type errorVisit struct {
+	err error // set for comparable errors
+	ref errorReference
+}
+
+// revisit records err and reports whether the walk saw it before.
+// Errors that are neither comparable nor reference-backed cannot be
+// tracked; the step budget bounds them.
+func (v *errorVisits) revisit(err error) bool {
+	var key errorVisit
+	if isComparableError(err) {
+		key.err = err
+	} else if ref, ok := errorReferenceOf(err); ok {
+		key.ref = ref
+	} else {
+		return false
+	}
+	if v.seen == nil {
+		for i := range v.n {
+			// Only comparable errors are stored in err, and interfaces
+			// with different dynamic types compare unequal: no panic.
+			if v.inline[i] == key {
+				return true
+			}
+		}
+		if v.n < inlineVisits {
+			v.inline[v.n] = key
+			v.n++
+			return false
+		}
+		v.seen = make(map[error]struct{}, 2*inlineVisits)
+		v.seenRefs = make(map[errorReference]struct{})
+		for _, prior := range v.inline {
+			v.insert(prior)
+		}
+	}
+	if key.err != nil {
+		if _, ok := v.seen[key.err]; ok {
+			return true
+		}
+	} else if _, ok := v.seenRefs[key.ref]; ok {
+		return true
+	}
+	v.insert(key)
+	return false
+}
+
+func (v *errorVisits) insert(key errorVisit) {
+	if key.err != nil {
+		v.seen[key.err] = struct{}{}
+	} else {
+		v.seenRefs[key.ref] = struct{}{}
+	}
 }
 
 func sameError(a, b error) bool {
@@ -134,7 +205,16 @@ func isComparableError(err error) bool {
 	if err == nil {
 		return true
 	}
-	return reflect.ValueOf(err).Comparable()
+	// Type.Comparable is static and free. Only a struct or an array can
+	// hold an interface whose dynamic value makes == panic, so only those
+	// need Value.Comparable, which allocates on every call.
+	t := reflect.TypeOf(err)
+	switch t.Kind() {
+	case reflect.Struct, reflect.Array:
+		return t.Comparable() && reflect.ValueOf(err).Comparable()
+	default:
+		return t.Comparable()
+	}
 }
 
 type errorReference struct {
@@ -169,15 +249,11 @@ func safeErrorIs(err, target error) bool {
 		return false
 	}
 	remaining := maxUnwrapDepth
-	return matchError(err, target, make(map[error]struct{}), make(map[errorReference]struct{}), &remaining)
+	var visited errorVisits
+	return matchError(err, target, &visited, &remaining)
 }
 
-func matchError(
-	err, target error,
-	seen map[error]struct{},
-	seenRefs map[errorReference]struct{},
-	remaining *int,
-) (matched bool) {
+func matchError(err, target error, visited *errorVisits, remaining *int) (matched bool) {
 	defer func() {
 		if recover() != nil {
 			matched = false
@@ -191,16 +267,8 @@ func matchError(
 		if sameError(err, target) {
 			return true
 		}
-		if isComparableError(err) {
-			if _, ok := seen[err]; ok {
-				return false
-			}
-			seen[err] = struct{}{}
-		} else if ref, ok := errorReferenceOf(err); ok {
-			if _, exists := seenRefs[ref]; exists {
-				return false
-			}
-			seenRefs[ref] = struct{}{}
+		if visited.revisit(err) {
+			return false
 		}
 		if matcher, ok := err.(interface{ Is(error) bool }); ok && matcher.Is(target) {
 			return true
@@ -213,7 +281,7 @@ func matchError(
 				if *remaining == 0 {
 					return false
 				}
-				if matchError(child, target, seen, seenRefs, remaining) {
+				if matchError(child, target, visited, remaining) {
 					return true
 				}
 			}
@@ -304,13 +372,9 @@ func messageValue(field reflect.Value) (any, bool) {
 		}
 		return text, true
 	default:
-		if field.Kind() == reflect.Interface && !field.IsNil() {
-			inner := field.Elem()
-			if inner.IsValid() && inner.CanInterface() {
-				return inner.Interface(), true
-			}
-		}
-		return value, true
+		// Interface returns the dynamic value of an interface field, so
+		// nil here is an unset Message: Error() is the better text.
+		return value, value != nil
 	}
 }
 

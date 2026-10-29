@@ -1,11 +1,12 @@
 name: nightly-fuzz
 
-# Nightly long-fuzz run (action plan "Nightly long fuzz"): every fuzz
-# target gets 10 minutes instead of the 60s PR budget, so deep state
-# spaces (lifecycle programs, dedupe widths, compile configs) get real
-# exploration. Crashers are minimized into testdata/fuzz by the Go
-# tooling and uploaded as workflow artifacts; failures are reported as
-# issues so a nightly break is impossible to miss.
+# Nightly long-fuzz run: every fuzz target gets 10 minutes instead of the
+# 60s PR budget, so deep state spaces (lifecycle programs, dedupe widths,
+# compile configs, limits) get real exploration. Packages fan out in
+# parallel; scripts/fuzz.sh finds the targets, so a new Fuzz function
+# needs no edit here. Failing inputs are minimized into testdata/fuzz by
+# the Go tooling and uploaded as workflow artifacts; a failure opens an
+# issue so a nightly break is impossible to miss.
 
 on:
   schedule:
@@ -14,13 +15,29 @@ on:
 
 permissions:
   contents: read
-  issues: write # nightly failure reports
 
 jobs:
-  fuzz-core:
-    name: core (10m per target)
+  targets:
     runs-on: ubuntu-latest
-    timeout-minutes: 420
+    outputs:
+      dirs: ${{ steps.list.outputs.dirs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: List packages with fuzz targets
+        id: list
+        run: echo "dirs=$(scripts/fuzz.sh -j)" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: fuzz ${{ matrix.dir }} (10m per target)
+    needs: targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.targets.outputs.dirs) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -31,125 +48,65 @@ jobs:
           go-version: '1.25.x'
           check-latest: true
           cache: true
+          cache-dependency-path: '**/go.sum'
 
-      - name: Fuzz root-package targets for 10 minutes each
-        shell: bash
+      - name: Fuzz every target for 10 minutes
+        env:
+          FUZZ_FAILURES_FILE: ${{ runner.temp }}/fuzz-report/failed-${{ strategy.job-index }}.txt
         run: |
-          set +e
-          mkdir -p /tmp/fuzz
-          echo "core fuzz failures:" > /tmp/fuzz/core-failures
-          for target in FuzzRecordEncodedDedupe FuzzEndLifecycle FuzzDedupeFields FuzzCompileConfig FuzzErrorGraph FuzzCrashAdversarialValues FuzzCrashGuardedSequences; do
-            echo "=== $target ==="
-            if go test . -run '^$' -fuzz "^$target$" -fuzztime 10m; then
-              echo "PASS $target"
-            else
-              echo "FAIL $target"
-              echo "  - $target" >> /tmp/fuzz/core-failures
-            fi
-          done
-          echo "=== FuzzMiddlewareRequest ==="
-          if (cd integration/std && go test . -run '^$' -fuzz '^FuzzMiddlewareRequest$' -fuzztime 10m); then
-            echo "PASS FuzzMiddlewareRequest"
-          else
-            echo "FAIL FuzzMiddlewareRequest"
-            echo "  - FuzzMiddlewareRequest" >> /tmp/fuzz/core-failures
-          fi
+          mkdir -p "$(dirname "$FUZZ_FAILURES_FILE")"
+          scripts/fuzz.sh -t 10m "${{ matrix.dir }}"
 
-      - name: Upload crash artifacts
-        if: always()
+      - name: Upload failing inputs
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: core-crash-artifacts
-          path: |
-            testdata/fuzz/
-            integration/std/testdata/fuzz/
+          name: fuzz-failures-${{ strategy.job-index }}
+          path: ${{ matrix.dir }}/testdata/fuzz/
           if-no-files-found: ignore
 
-      - name: Decide whether core failed
-        shell: bash
-        run: |
-          # grep exits 1 on no match; set -e is on, so guard with ||.
-          if grep -q 'FAIL' /tmp/fuzz/core-failures 2>/dev/null; then
-            echo "report=yes" >> "$GITHUB_ENV"
-          else
-            echo "report=no" >> "$GITHUB_ENV"
-          fi || true
-      - name: Create issue for core failures
-        if: env.report == 'yes'
-        uses: actions/github-script@v7
+      # The report job lists these "dir target" lines in the issue.
+      - name: Upload failed target list
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('/tmp/fuzz/core-failures', 'utf8');
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Nightly core fuzz failures (${new Date().toISOString().slice(0, 10)})`,
-              body: body + '\n\nCrash artifacts: https://github.com/' +
-                context.repo.owner + '/' + context.repo.repo +
-                '/actions/runs/' + context.runId,
-            });
+          name: fuzz-report-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/fuzz-report/
+          if-no-files-found: ignore
 
-  fuzz-encoder:
-    name: encoder (10m per target)
+  report:
+    needs: fuzz
+    if: failure()
     runs-on: ubuntu-latest
-    timeout-minutes: 420
+    permissions:
+      actions: read
+      issues: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-
-      - name: Setup Go
-        uses: actions/setup-go@v6.2.0
+      - name: Download failed target lists
+        uses: actions/download-artifact@v4
+        continue-on-error: true # a job can fail before it writes a list
         with:
-          go-version: '1.25.x'
-          check-latest: true
-          cache: true
+          pattern: fuzz-report-*
+          path: fuzz-report
+          merge-multiple: true
 
-      - name: Fuzz JSON targets for 10 minutes each
-        shell: bash
-        run: |
-          set +e
-          mkdir -p /tmp/fuzz
-          echo "encoder fuzz failures:" > /tmp/fuzz/encoder-failures
-          for target in FuzzAppendString FuzzAppendBytes FuzzAppendFloat32 \
-                        FuzzAppendFloat64 FuzzAppendTimeRFC3339 FuzzAppendInterface; do
-            echo "=== $target ==="
-            if go test ./internal/json -run '^$' -fuzz "^$target$" -fuzztime 10m; then
-              echo "PASS $target"
-            else
-              echo "FAIL $target"
-              echo "  - $target" >> /tmp/fuzz/encoder-failures
-            fi
-          done
-
-      - name: Upload crash artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: encoder-crash-artifacts
-          path: internal/json/testdata/fuzz/
-          if-no-files-found: ignore
-
-      - name: Decide whether encoder failed
-        shell: bash
-        run: |
-          if grep -q 'FAIL' /tmp/fuzz/encoder-failures 2>/dev/null; then
-            echo "report=yes" >> "$GITHUB_ENV"
-          else
-            echo "report=no" >> "$GITHUB_ENV"
-          fi || true
-      - name: Create issue for encoder failures
-        if: env.report == 'yes'
+      - name: Open an issue for the failed run
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('/tmp/fuzz/encoder-failures', 'utf8');
+            const path = require('path');
+            const run = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const failed = fs.existsSync('fuzz-report')
+              ? fs.readdirSync('fuzz-report').flatMap((f) =>
+                  fs.readFileSync(path.join('fuzz-report', f), 'utf8').split('\n').filter(Boolean))
+              : [];
+            const list = failed.length
+              ? failed.map((t) => `- \`${t}\``).join('\n')
+              : '- No target list: a job failed outside the fuzz step. See the run.';
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Nightly encoder fuzz failures (${new Date().toISOString().slice(0, 10)})`,
-              body: body + '\n\nCrash artifacts: https://github.com/' +
-                context.repo.owner + '/' + context.repo.repo +
-                '/actions/runs/' + context.runId,
+              title: `Nightly fuzz failures (${new Date().toISOString().slice(0, 10)})`,
+              body: `Failed targets (package dir, target):\n\n${list}\n\nThe job logs and the failing inputs (artifacts) are in ${run}.\n\nReproduce locally with \`scripts/fuzz.sh -t 10m <package-dir>\`, then commit the input under \`testdata/fuzz/\` as a regression test.`,
             });

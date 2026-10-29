@@ -28,4 +28,10 @@ const (
 	// KeyJobScheduledAt is written by the worker integration for job
 	// metadata that has no op.* equivalent.
 	KeyJobScheduledAt = "job.scheduled_at"
+
+	// KeyDroppedFields and KeyTruncatedValues report the writes the
+	// event limits changed (Config.MaxFields, Config.MaxValueBytes).
+	// End adds each one only when its count is above zero.
+	KeyDroppedFields   = "unolog.dropped_fields"
+	KeyTruncatedValues = "unolog.truncated_values"
 )

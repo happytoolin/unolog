@@ -34,6 +34,8 @@ func eventFromContext(ctx context.Context) *walRef {
 // Add calls from child goroutines are safe: they serialize under the
 // event mutex, so the field set is complete — only the order is not
 // defined.
+//
+// Writes are bounded by Config.MaxFields and Config.MaxValueBytes.
 func Add(ctx context.Context, key string, value any, kv ...any) {
 	ref := eventFromContext(ctx)
 	if ref == nil {
@@ -46,6 +48,21 @@ func Add(ctx context.Context, key string, value any, kv ...any) {
 		return
 	}
 	ref.ev.addKV(ref, key, value, kv...)
+}
+
+// AddFields records typed fields on the request's event, built with
+// String, Int, Bool, and the other Field constructors. It is the
+// allocation-free form of Add for dynamic values: Add boxes each value
+// into an interface, AddFields does not. Fields with an empty key,
+// including the zero Field, are skipped. Concurrency, sealing, and the
+// event limits follow Add.
+func AddFields(ctx context.Context, fields ...Field) {
+	if len(fields) == 0 {
+		return
+	}
+	if ref := eventFromContext(ctx); ref != nil {
+		ref.ev.addFields(ref.gen, fields)
+	}
 }
 
 // Error records err on the request's event as the structured canonical

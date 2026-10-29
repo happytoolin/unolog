@@ -23,7 +23,7 @@ lint:
   while IFS= read -r modfile; do \
     moddir="$(dirname "$modfile")"; \
     echo "== linting $moddir =="; \
-    (cd "$moddir" && go vet ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...); \
+    (cd "$moddir" && go vet ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...); \
   done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
 
 # Scan every module for reachable vulnerabilities.
@@ -47,6 +47,18 @@ coverage:
     echo "== coverage $moddir =="; \
     (cd "$moddir" && go test ./... -cover); \
   done < <(printf '%s\n' go.mod && git ls-files '**/go.mod')
+
+# Fuzz every target in every module (or only the given package dirs).
+fuzz time='30s' *dirs:
+  scripts/fuzz.sh -t {{time}} {{dirs}}
+
+# List every fuzz target as "package-dir target".
+fuzz-list:
+  scripts/fuzz.sh -l
+
+# Mutation-test every module with gremlins (or only the given module dirs).
+mutate *dirs:
+  scripts/mutate.sh {{dirs}}
 
 bench:
   (cd benches && go test -run '^$' -bench . -benchmem ./...)

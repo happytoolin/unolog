@@ -19,6 +19,11 @@ type Record struct {
 	fields      []Field // the sealed WAL slice; nobody mutates it after End
 	completedAt time.Time
 
+	// maxValueBytes cuts error messages in the canonical line: an error
+	// field holds the error, and its text exists only once it is
+	// encoded. Zero means no cut.
+	maxValueBytes int
+
 	// computed lazily on first Encoded
 	encoded atomic.Pointer[encodedLine]
 }
@@ -47,8 +52,9 @@ func (r *Record) Message() string { return r.msg }
 func (r *Record) Time() time.Time { return r.completedAt }
 
 // Fields returns the event's fields in insertion order (last-write-wins
-// duplicates included; see Lookup for the resolved view). No map is
-// built and no clone occurs.
+// duplicates included; see Lookup for the resolved view). An event that
+// reached Config.MaxFields keeps only the last write of a repeated
+// non-canonical key. No map is built and no clone occurs.
 func (r *Record) Fields() []Field { return r.fields }
 
 // Lookup returns the last value written under key.
@@ -103,7 +109,7 @@ func (r *Record) encodeInto(b []byte) []byte {
 	if needsFieldAliasing(fields) {
 		fields = aliasFields(fields)
 	}
-	b = appendDedupedFields(b, fields)
+	b = appendDedupedFields(b, fields, r.maxValueBytes)
 	b = jsonEnc.AppendKey(b, "time")
 	b = json.AppendTimeRFC3339(b, r.completedAt)
 	b = jsonEnc.AppendKey(b, "message")
@@ -181,7 +187,7 @@ func keyDigest(key string) uint64 {
 // position (amendment 3). Narrow events use the allocation-free scan;
 // wide events track seen keys in a stack array and fall back to a map
 // past its capacity, so allocation is tied to genuinely wide events.
-func appendDedupedFields(dst []byte, fields []Field) []byte {
+func appendDedupedFields(dst []byte, fields []Field, maxValueBytes int) []byte {
 	if len(fields) <= dedupeScanLimit {
 		// The last-occurrence scan compares a cheap key digest first and
 		// only falls back to the full string compare on a digest hit, so
@@ -201,7 +207,7 @@ func appendDedupedFields(dst []byte, fields []Field) []byte {
 				}
 			}
 			if last {
-				dst = appendFieldJSON(dst, f)
+				dst = appendFieldJSON(dst, f, maxValueBytes)
 			}
 		}
 		return dst
@@ -242,15 +248,16 @@ func appendDedupedFields(dst []byte, fields []Field) []byte {
 		kept = append(kept, i)
 	}
 	for _, k := range slices.Backward(kept) {
-		dst = appendFieldJSON(dst, fields[k])
+		dst = appendFieldJSON(dst, fields[k], maxValueBytes)
 	}
 	return dst
 }
 
 // appendFieldJSON encodes one typed field with the vendored encoder,
 // using the same type mapping the v0 zerolog adapter established (error
-// → message string, duration → float ms, time → RFC3339).
-func appendFieldJSON(dst []byte, f Field) []byte {
+// → message string, duration → float ms, time → RFC3339). A positive
+// maxValueBytes cuts an error message.
+func appendFieldJSON(dst []byte, f Field, maxValueBytes int) []byte {
 	dst = jsonEnc.AppendKey(dst, f.key)
 	switch f.kind {
 	case KindString:
@@ -273,7 +280,11 @@ func appendFieldJSON(dst []byte, f Field) []byte {
 		// safeErrorMessage fences typed-nils (direct or %w-wrapped)
 		// and panicking Error() implementations.
 		err, _ := f.val.(error)
-		return jsonEnc.AppendString(dst, safeErrorMessage(err))
+		msg := safeErrorMessage(err)
+		if maxValueBytes > 0 && len(msg) > maxValueBytes {
+			msg = truncateUTF8(msg, maxValueBytes)
+		}
+		return jsonEnc.AppendString(dst, msg)
 	default:
 		return jsonEnc.AppendInterface(dst, f.val)
 	}

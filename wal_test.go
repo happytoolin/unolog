@@ -20,7 +20,7 @@ import (
 )
 
 func TestWALAppendOrder(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	ev.addKV(ref, "a", 1, "b", "two", "c", true)
 
@@ -36,7 +36,7 @@ func TestWALAppendOrder(t *testing.T) {
 }
 
 func TestWALMalformedKVTailSkipped(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	// odd tail and non-string key are skipped; valid pairs survive
 	ev.addKV(ref, "k", 1, "good", 2, 3, "bad", "", "also bad", "fine", 3)
@@ -106,7 +106,7 @@ func TestWALSealingAfterRelease(t *testing.T) {
 // snapshots serialize under the mutex, and the race detector must stay
 // clean (spec scenario: watchdog snapshot mid-flight).
 func TestWALGuardedProtocol(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 
 	var wg sync.WaitGroup
@@ -135,7 +135,7 @@ func TestWALGuardedProtocol(t *testing.T) {
 }
 
 func TestWALLookupLastWriteWins(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	ev.addKV(ref, "k", 1)
 	ev.addKV(ref, "k", 2)
@@ -148,7 +148,7 @@ func TestWALLookupLastWriteWins(t *testing.T) {
 }
 
 func TestWALSetters(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{ev: ev, gen: ev.state.Load() >> walStateBits}
 	ev.setError(ref, errors.New("boom"))
 	if !ev.hasErr {
@@ -190,7 +190,7 @@ func TestWALSetters(t *testing.T) {
 
 func TestWALStartedAt(t *testing.T) {
 	before := time.Now()
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	if ev.startedAt.Before(before.Add(-time.Second)) || ev.startedAt.After(time.Now().Add(time.Second)) {
 		t.Fatalf("startedAt = %v, outside window", ev.startedAt)
 	}
@@ -202,8 +202,8 @@ func TestWALResetReleasesFieldReferences(t *testing.T) {
 		ev.fields[i] = fieldOf("payload", make([]byte, 1024))
 	}
 	previous := ev.fields
-	ev.reset()
-	ev.append(genOf(ev), fieldStr("short", "next request"))
+	ev.reset(defaultLimits)
+	ev.append(genOf(ev), String("short", "next request"))
 	for i, f := range previous[1:] {
 		if f.kind != KindInvalid || f.key != "" || f.str != "" || f.val != nil {
 			t.Fatalf("unused slot %d retained the previous request", i+1)
@@ -220,12 +220,12 @@ func (e *walCountedError) Error() string {
 
 func TestWALStaleErrorSkipsUserCode(t *testing.T) {
 	ev := &event{}
-	ev.reset()
+	ev.reset(defaultLimits)
 	ref := &walRef{ev: ev, gen: genOf(ev)}
 	err := &walCountedError{}
 	ev.seal()
 	ev.setError(ref, err)
-	ev.reset()
+	ev.reset(defaultLimits)
 	ev.setError(ref, err)
 	if err.calls != 0 {
 		t.Fatalf("stale Error called user code %d times", err.calls)
@@ -244,7 +244,7 @@ func TestWALStaleErrorSkipsUserCode(t *testing.T) {
 // same invariant through the public API and asserts the emitted
 // event; this white-box test pins the internal latches.)
 func TestWALStaleSettersAfterReset(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	gen := ev.state.Load() >> walStateBits
 	owner := &walRef{ev: ev, gen: gen}
 	stale := &walRef{ev: ev, gen: gen}
@@ -265,7 +265,7 @@ func TestWALStaleSettersAfterReset(t *testing.T) {
 	}
 
 	ev.seal()
-	ev.reset() // the next request's newEvent() after the pool hands it out
+	ev.reset(defaultLimits) // the next request's newEvent(defaultLimits) after the pool hands it out
 	if newGen := ev.state.Load() >> walStateBits; newGen == gen {
 		t.Fatal("reset did not advance the generation")
 	}
@@ -404,10 +404,10 @@ func TestSealDuringAppend(t *testing.T) {
 // TestAppendStaleGeneration pins both recycle directions: stale (past)
 // and future generations are rejected.
 func TestAppendStaleGeneration(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	ref := &walRef{gen: ev.state.Load() >> walStateBits}
-	ev.append(ref.gen-1, fieldStr("past", "x"))   // stale past
-	ev.append(ref.gen+1, fieldStr("future", "x")) // future
+	ev.append(ref.gen-1, String("past", "x"))   // stale past
+	ev.append(ref.gen+1, String("future", "x")) // future
 	for _, f := range ev.fields {
 		if f.key == "past" || f.key == "future" {
 			t.Fatal("generation check failed")
@@ -419,16 +419,16 @@ func TestAppendStaleGeneration(t *testing.T) {
 // generation is refused, and active and sealed events snapshot a
 // race-free copy.
 func TestSnapshotGenerationGuard(t *testing.T) {
-	ev := newEvent()
+	ev := newEvent(defaultLimits)
 	stale := genOf(ev)
 
-	ev.reset() // pool recycle: a new generation
+	ev.reset(defaultLimits) // pool recycle: a new generation
 	if _, ok := ev.snapshotFields(stale); ok {
 		t.Fatal("stale snapshot accepted")
 	}
 
 	// Positive control: the current generation snapshots.
-	ev.append(genOf(ev), fieldStr("k", "v"))
+	ev.append(genOf(ev), String("k", "v"))
 	snap, ok := ev.snapshotFields(genOf(ev))
 	if !ok || len(snap) != 1 || snap[0].key != "k" {
 		t.Fatalf("active snapshot = %v (ok=%v), want one k field", snap, ok)
@@ -451,17 +451,17 @@ func TestSnapshotGenerationGuard(t *testing.T) {
 // snapshot's copy.
 func TestSnapshotResetSerialization(t *testing.T) {
 	for range 50 {
-		ev := newEvent()
+		ev := newEvent(defaultLimits)
 		gen := genOf(ev)
 		for j := range 256 {
-			ev.append(gen, fieldInt64("k", int64(j)))
+			ev.append(gen, Int64("k", int64(j)))
 		}
 		ev.seal()
 
 		var wg sync.WaitGroup
 		wg.Go(func() { _, _ = ev.snapshotFields(gen) })
 		time.Sleep(100 * time.Microsecond) // let the snapshot take the mutex
-		ev.reset()
+		ev.reset(defaultLimits)
 		wg.Wait()
 	}
 }
@@ -1047,7 +1047,7 @@ func reportScheduleResults(t *testing.T, res scheduleResult, want int) {
 func replayAndCompare(t *testing.T, s *sim) {
 	t.Helper()
 	ev := &event{}
-	ev.reset()
+	ev.reset(defaultLimits)
 
 	for _, st := range s.stepsRun {
 		if st.real != nil {
@@ -1261,7 +1261,7 @@ func resetOp(flag string) simStep {
 		// released it.
 		runnable: func(s *sim) bool { return s.flags[flag] },
 		run:      func(s *sim) { s.simReset() },
-		real:     func(ev *event, _ *sim) { ev.reset() },
+		real:     func(ev *event, _ *sim) { ev.reset(defaultLimits) },
 	}
 }
 
